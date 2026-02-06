@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chart Test</title>
+    <style>
+        body { background-color: #222; color: white; font-family: sans-serif; }
+        #chart-container { width: 100%; height: 500px; border: 2px solid cyan; }
+    </style>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+    <h1>Standalone Chart Test</h1>
+    <div id="chart-container"></div>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const container = document.getElementById('chart-container');
+            
+            if (!window.LightweightCharts) {
+                container.innerHTML = "<h2 style='color:red;'>❌ Library NOT Loaded</h2>";
+                return;
+            }
+
+            const chart = LightweightCharts.createChart(container, {
+                layout: { textColor: 'white', background: { type: 'solid', color: '#000000' } },
+                grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
+                timeScale: { borderColor: '#485c7b' }
+            });
+
+            const series = chart.addCandlestickSeries({
+                upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+            });
+
+            // 1 Year of Dummy Data
+            const data = [];
+            let date = new Date(2023, 0, 1);
+            let price = 100;
+            for (let i = 0; i < 365; i++) {
+                date.setDate(date.getDate() + 1);
+                const time = date.toISOString().split('T')[0];
+                const open = price + Math.random() * 10 - 5;
+                const close = open + Math.random() * 10 - 5;
+                const high = Math.max(open, close) + Math.random() * 5;
+                const low = Math.min(open, close) - Math.random() * 5;
+                price = close;
+                data.push({ time, open, high, low, close });
+            }
+            series.setData(data);
+            chart.timeScale().fitContent();
+            
+            new ResizeObserver(entries => {
+                if (entries.length === 0 || entries[0].target !== container) { return; }
+                const newRect = entries[0].contentRect;
+                chart.applyOptions({ width: newRect.width, height: newRect.height });
+            }).observe(container);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+    "max_bars_back": 10000,
+    "neighbors": 12,
+    "rsi_length": 11,
+    "wt_channel_len": 11,
+    "wt_avg_len": 17,
+    "cci_length": 19,
+    "adx_length": 22,
+    "adx_threshold": 30.0,
+    "use_kernel": true,
+    "kernel_lookback": 15,
+    "kernel_weight": 8,
+    "tp_ratio": 0.99,
+    "sl_ratio": 0.03,
+    "leverage": 2.0,
+    "active_strategy": "standard",
+    "timeframe": "5m",
+    "sl_multiplier": 7.0,
+    "ema_period": 80.0,
+    "use_ema_filter": 1.0,
+    "use_adx_filter": 1.0
+}

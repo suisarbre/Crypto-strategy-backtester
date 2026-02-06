@@ -1,0 +1,28 @@
+# Secrets
+secret_keys.py
+.env
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build
+build/
+dist/
+*.spec
+
+# VS Code
+.vscode/
+
+# Logs
+logs/
+*.log
+
+# Temp
+temp/
+tmp/
+*.csv
+!initial_data.csv
