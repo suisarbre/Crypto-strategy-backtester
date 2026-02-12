@@ -1,58 +1,49 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>Chart Test</title>
+    <script src="../static/lightweight-charts.js"></script>
     <style>
-        body { background-color: #222; color: white; font-family: sans-serif; }
-        #chart-container { width: 100%; height: 500px; border: 2px solid cyan; }
+        body {
+            background-color: #222;
+            color: white;
+        }
+
+        #chart_container {
+            width: 800px;
+            height: 500px;
+            border: 1px solid red;
+        }
     </style>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 </head>
+
 <body>
     <h1>Standalone Chart Test</h1>
-    <div id="chart-container"></div>
+    <div id="chart_container"></div>
+
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const container = document.getElementById('chart-container');
-            
-            if (!window.LightweightCharts) {
-                container.innerHTML = "<h2 style='color:red;'>❌ Library NOT Loaded</h2>";
-                return;
-            }
+        console.log("Script Started");
+        const container = document.getElementById('chart_container');
 
+        if (window.LightweightCharts) {
+            console.log("Library Loaded!");
             const chart = LightweightCharts.createChart(container, {
-                layout: { textColor: 'white', background: { type: 'solid', color: '#000000' } },
+                layout: { textColor: '#d1d4dc', background: { type: 'solid', color: '#111111' } },
                 grid: { vertLines: { color: '#333' }, horzLines: { color: '#333' } },
-                timeScale: { borderColor: '#485c7b' }
             });
-
-            const series = chart.addCandlestickSeries({
-                upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350',
-            });
-
-            // 1 Year of Dummy Data
-            const data = [];
-            let date = new Date(2023, 0, 1);
-            let price = 100;
-            for (let i = 0; i < 365; i++) {
-                date.setDate(date.getDate() + 1);
-                const time = date.toISOString().split('T')[0];
-                const open = price + Math.random() * 10 - 5;
-                const close = open + Math.random() * 10 - 5;
-                const high = Math.max(open, close) + Math.random() * 5;
-                const low = Math.min(open, close) - Math.random() * 5;
-                price = close;
-                data.push({ time, open, high, low, close });
-            }
-            series.setData(data);
-            chart.timeScale().fitContent();
-            
-            new ResizeObserver(entries => {
-                if (entries.length === 0 || entries[0].target !== container) { return; }
-                const newRect = entries[0].contentRect;
-                chart.applyOptions({ width: newRect.width, height: newRect.height });
-            }).observe(container);
-        });
+            const series = chart.addCandlestickSeries();
+            series.setData([
+                { time: '2018-12-22', open: 75.16, high: 82.84, low: 36.16, close: 45.72 },
+                { time: '2018-12-23', open: 45.12, high: 53.90, low: 45.12, close: 48.09 },
+                { time: '2018-12-24', open: 60.71, high: 60.71, low: 53.39, close: 59.29 },
+            ]);
+            console.log("Chart Created");
+        } else {
+            console.error("Library NOT Loaded");
+            document.body.innerHTML += "<h1>LIBRARY FAIL</h1>";
+        }
     </script>
 </body>
+
 </html>

@@ -228,4 +228,43 @@ namespace indicators {
         return out;
     }
 
+    std::vector<double> choppiness(const std::vector<double>& high, const std::vector<double>& low, const std::vector<double>& close, int period) {
+        size_t n = close.size();
+        std::vector<double> out(n, 50.0); // Default neutral
+        if(n < (size_t)period) return out;
+        
+        std::vector<double> tr(n, 0.0);
+        // TR Calculation
+        for(size_t i=1; i<n; ++i) {
+            double hl = high[i] - low[i];
+            double hc = std::abs(high[i] - close[i-1]);
+            double lc = std::abs(low[i] - close[i-1]);
+            tr[i] = std::max({hl, hc, lc});
+        }
+        
+        // Sum of TR
+        // Rolling max High / min Low
+        for(size_t i=period; i<n; ++i) {
+            double sum_tr = 0.0;
+            double max_h = high[i];
+            double min_l = low[i];
+            
+            for(int j=0; j<period; ++j) {
+                sum_tr += tr[i-j];
+                if(high[i-j] > max_h) max_h = high[i-j];
+                if(low[i-j] < min_l) min_l = low[i-j];
+            }
+            
+            double range = max_h - min_l;
+            if(range == 0) range = 0.00001; // Avoid div by zero
+            
+            // Formula: 100 * Log10(SumTR / Range) / Log10(Period)
+            double ratio = sum_tr / range;
+            if(ratio <= 0) ratio = 1.0; 
+            
+            out[i] = 100.0 * std::log10(ratio) / std::log10((double)period);
+        }
+        return out;
+    }
+
 }

@@ -26,4 +26,7 @@ namespace indicators {
     // ATR
     std::vector<double> atr(const std::vector<double>& high, const std::vector<double>& low, const std::vector<double>& close, int period);
 
+    // Choppiness Index
+    std::vector<double> choppiness(const std::vector<double>& high, const std::vector<double>& low, const std::vector<double>& close, int period);
+
 }

@@ -27,54 +27,55 @@ TIMEFRAME_CHANGE_THRESHOLD = 0.10
 OPTIMIZER_MIN_TRADES = 30     # 최소 거래 횟수 (과적합 방지, 10 -> 30 상향)
 OPTIMIZER_MAX_TRADES = 500    # [New] 최대 거래 횟수 (과도한 스캘핑 방지)
 OPTIMIZER_MAX_MDD = 0.3       # 최대 허용 MDD (30%)
-EMA_FILTER_PERIOD = 200       # 추세 필터용 EMA 기간
-
-# [ATR Dynamic Stop Loss]
-USE_ATR_SL = True             # ATR 기반 손절 사용 여부 (False면 고정 SL_RATIO)
-# [ATR Dynamic Trailing Stop]
-USE_ATR_SL = True             # ATR 기반 익절/손절 최적화 사용 여부
-ATR_TRAIL_SCAN_RANGE = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0] # [Long Trend] 더 길게 가져가기 위한 넓은 범위 설정
-ATR_PERIOD = 14               # ATR 계산 기간 (기본 14)
+EMA_FILTER_PERIOD = 80        # [Tuned] 추세 필터 (200 -> 80) 더 빠른 진입
+USE_ATR_SL = True             # ATR 기반 손절 사용 여부
+ATR_TRAIL_SCAN_RANGE = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0] 
+ATR_PERIOD = 14               
 
 # [NEW] Strategy Enhancements (Default Values)
-CHOP_THRESHOLD = 61.8         # Choppiness Index 임계값
-ATR_TRAIL_MULTIPLIER = 5.0    # 기본 Trailing Stop 배수 (수동/단일 실행용, 최적화 시 위 범위 사용)
+CHOP_THRESHOLD = 45.0         # [Stricter] 횡보 필터 강화 (50.0 -> 45.0)
+ATR_TRAIL_MULTIPLIER = 7.0    # [Looser] Trailing Stop (6.0 -> 7.0) 길게 먹기
+USE_HYBRID_EXIT = True        
+HYBRID_EXIT_STRATEGY = 'SUPERTREND' 
+SUPERTREND_FACTOR = 5.0       # [Widened] 추세 길게 타기 (4.0 -> 5.0)
+
+# [New] Cooldown Settings
+COOLDOWN_CANDLES = 0          # [Tuned] 쿨다운 제거 (기회 놓치지 않기)
 
 # [Trading Parameters]
-FEE_RATE = 0.001              # 거래 수수료 (0.1%)
-START_BALANCE = 100.0         # 테스트 시작 잔고
-KERNEL_LOOKBACK_MULT = 5      # 커널 룩백 배수 (lookback * mult)
+FEE_RATE = 0.001              
+START_BALANCE = 100.0         
+KERNEL_LOOKBACK_MULT = 5      
 
 # 3. 전략 기본 설정
-LEVERAGE_TEST_RANGE = [1, 2, 3,4,5,6,7] # [Safety] 최적화 시 테스트할 레버리지 목록 (OOS 과적합 방지)
-DEFAULT_LEVERAGE = 3      # 초기 레버리지 (안전하게 3배로 시작)
-TP_RATIO = 0.99           # 익절 비율 (사용 안 함/로직 내부 처리)
-SL_RATIO = 0.030          # 손절 비율 (3%)
+LEVERAGE_TEST_RANGE = [1, 2, 3,4,5,6,7] 
+DEFAULT_LEVERAGE = 3      
+TP_RATIO = 0.99           
+SL_RATIO = 0.030          
 
 
 # 4. 봇 시스템 설정
-OPTIMIZE_INTERVAL_MINUTES = 240 # WFA 재최적화 주기 (4시간 권장)
+OPTIMIZE_INTERVAL_MINUTES = 240 
 
 # [WFA: Walk-Forward Analysis Settings]
 WFA_ENABLED = True
-WFA_WINDOW_SIZE = 15000       # 전체 롤링 윈도우 크기 (Safe OOS를 포함한 전체 데이터)
-# IS(In-Sample) : OOS(Out-of-Sample) 비율 -> OOS는 검증용
-WFA_TRAIN_RATIO = 0.7         # 10k(Train) : 5k(Test) 정도 비율 유지
+WFA_WINDOW_SIZE = 15000       
+WFA_TRAIN_RATIO = 0.7         
 
 # [Persistence]
-PARAMS_FILE_PATH = "best_params.json" # 최적 파라미터 저장 경로
+PARAMS_FILE_PATH = "best_params.json" 
 
 
 # 5. 기타 설정
 CURRENT_CONFIG = {
     'max_bars_back': 10000,
-    'neighbors': 11,      
+    'neighbors': 8,       # [Tuned] 민감도 상향 (11 -> 8)
     'rsi_length': 14,      
     'wt_channel_len': 10,  
     'wt_avg_len': 21,      
     'cci_length': 20,      
     'adx_length': 14,      
-    'adx_threshold': 20,  
+    'adx_threshold': 15,  # [Tuned] 추세 강도 문턱 낮춤 (20 -> 15)
     'use_kernel': True,    
     'kernel_lookback': 15,  
     'kernel_weight': 8,    

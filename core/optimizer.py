@@ -7,37 +7,38 @@ from analysis.indicators import add_indicators
 from analysis.signals import generate_signals
 from core.backtester import run_deep_backtest
 
-def execute_optimization_logic(current_config):
+def execute_optimization_logic(current_config, custom_ranges=None):
     """
-    현재 설정을 기반으로 주변 파라미터를 탐색하여 최적의 설정을 반환합니다.
-    여러 전략(Available Strategies)을 모두 테스트하여 가장 좋은 전략과 파라미터를 찾습니다.
+    Optimizes strategy parameters based on current configuration.
+    Tests available strategies to find the best settings.
+    If custom_ranges is provided, it uses those ranges instead of generating default ones.
     """
     start_time = datetime.now()
-    print(f"\n[{start_time.strftime('%H:%M')}] ⚙️ 전략 및 파라미터 정밀 최적화 시작...")
+    print(f"\n[{start_time.strftime('%H:%M')}] [Optimization] Starting Precise Strategy & Parameter Optimization...")
     
-    # 1. 데이터 가져오기 (공통)
+    # 1.   ()
     df_raw_origin = fetch_raw_data(cfg.SYMBOL, cfg.TIMEFRAME, cfg.MAX_FETCH_LIMIT)
     if df_raw_origin is None: 
         return None, 0, 0, 0, 0
     
-    # [NEW] 타임프레임 목록 가져오기
+    # [NEW] Get Timeframes
     timeframes_to_test = cfg.AVAILABLE_TIMEFRAMES if hasattr(cfg, 'AVAILABLE_TIMEFRAMES') else ['5m']
     strategies_to_test = cfg.AVAILABLE_STRATEGIES if hasattr(cfg, 'AVAILABLE_STRATEGIES') else ['standard']
     
-    print(f"   >>> 테스트할 타임프레임: {timeframes_to_test}")
-    print(f"   >>> 테스트할 전략 목록: {strategies_to_test}")
+    print(f"   >>> Timeframes to Test: {timeframes_to_test}")
+    print(f"   >>> Strategies to Test: {strategies_to_test}")
 
     # [WFA Logic]
     wfa_window = getattr(cfg, 'WFA_WINDOW_SIZE', 15000)
     train_ratio = getattr(cfg, 'WFA_TRAIN_RATIO', 0.7)
 
-    # 1. Window Slicing (최근 N개만 사용)
+    # 1. Window Slicing ( N )
     if len(df_raw_origin) > wfa_window:
         df_raw_origin = df_raw_origin.tail(wfa_window).copy().reset_index(drop=True)
     
     # 2. IS / OOS Split
     total_bars = len(df_raw_origin)
-    oos_size = int(total_bars * (1.0 - train_ratio)) # 예: 30%
+    oos_size = int(total_bars * (1.0 - train_ratio)) # : 30%
     min_is_size = 2000
     
     df_is = df_raw_origin
@@ -47,31 +48,31 @@ def execute_optimization_logic(current_config):
         split_idx = total_bars - oos_size
         df_is = df_raw_origin.iloc[:split_idx].copy()
         df_oos = df_raw_origin.iloc[split_idx:].copy()
-        print(f"\n🧩 [WFA Split] Window={total_bars} (Train Ratio={train_ratio})")
-        print(f"   👉 In-Sample (Train): {len(df_is)} bars (0 ~ {split_idx})")
-        print(f"   👉 Out-of-Sample (Test): {len(df_oos)} bars ({split_idx} ~ end)")
+        print(f"\n [WFA Split] Window={total_bars} (Train Ratio={train_ratio})")
+        print(f"   => In-Sample (Train): {len(df_is)} bars (0 ~ {split_idx})")
+        print(f"   => Out-of-Sample (Test): {len(df_oos)} bars ({split_idx} ~ end)")
     else:
-        print(f"\n⚠️ 데이터 부족으로 OOS 테스트 생략 (Total={total_bars})")
+        print(f"\n[Warning] Not enough data for OOS test (Total={total_bars})")
     
-    # 최적화 로직에서 사용할 데이터프레임 교체
-    # 루프 내에서 fetch_raw_data를 다시 부르지 않도록 주의해야 함.
-    # 하지만 아래 루프는 config.TIMEFRAME이 아니라 'tf' 변수를 씀.
-    # 즉, fetch_raw_data를 루프 안에서 다시 호출한다면 OOS 로직이 깨짐.
-    # 현재 코드 구조상 루프 안에서 fetch_raw_data를 호출하지 않고 
-    # 위에서 받은 df_raw_origin을 써야 하는데,
-    # 만약 루프가 Multi-Timeframe이라면 위에서 받은 5m 데이터로 15m 최적화를 할 수 없음.
-    # 따라서, 루프 안에서 데이터를 매번 새로 가져오는 구조라면...
-    # OOS 로직을 루프 안으로 옮겨야 함.
+    #     
+    #   fetch_raw_data    Warning .
+    #    config.TIMEFRAME  'tf'  .
+    # , fetch_raw_data     OOS  .
+    #      fetch_raw_data   
+    #   df_raw_origin  ,
+    #   Multi-Timeframe   5m  15m    .
+    # ,       ...
+    # OOS     .
     
-    # 기존 코드 분석 결과:
-    # df_raw_origin은 위에서 한 번 가져옴 (config.TIMEFRAME 기준).
-    # 하지만 아래 반복문 for tf in timeframes_to_test: 에서
-    # tf가 config.TIMEFRAME과 다르면 데이터를 다시 가져와야 함.
-    # 현재 코드는 for tf in ... 로 돌면서 데이터를 '새로' 가져오지 않고
-    # 기존 로직을 보면...
+    #    :
+    # df_raw_origin     (config.TIMEFRAME ).
+    #    for tf in timeframes_to_test: 
+    # tf config.TIMEFRAME     .
+    #   for tf in ...    ''  
+    #   ...
     pass # (This block replaces the initial setup to hint subsequent changes)
 
-    # 전역 최고 기록 초기화
+    #    
     global_best_score = -999
     global_best_params = current_config.copy()
     global_best_wins = 0
@@ -81,19 +82,19 @@ def execute_optimization_logic(current_config):
     
     # === [Multi-Timeframe Loop] ===
     for tf in timeframes_to_test:
-        print(f"\n⏳ 타임프레임 테스트 중: {tf}")
+        print(f"\n Testing Timeframe: {tf}")
         
         # === [Multi-Strategy Loop] ===
         for strategy_name in strategies_to_test:
-            print(f"   🔹 전략 테스트 중: {strategy_name.upper()} ({tf})")
+            print(f"    Testing Strategy: {strategy_name.upper()} ({tf})")
             
-            # 전략별 초기 설정
+            #   
             local_config = current_config.copy()
             local_config['active_strategy'] = strategy_name 
-            local_config['timeframe'] = tf # [NEW] 타임프레임 설정
+            local_config['timeframe'] = tf # [NEW]  
             # local_config['max_bars_back'] = 3000 # [Removed] User config (25000) should prevail
             
-            # 2. 초기화 (로컬 베스트)
+            # 2.  ( )
             best_score = -999
             best_params = local_config.copy()
             best_wins = 0
@@ -101,12 +102,12 @@ def execute_optimization_logic(current_config):
             best_mdd = 0
             best_balance = getattr(cfg, 'START_BALANCE', 100.0)
             
-            # Coarse Scanning에서 사용할 바 갯수 리스트
-            # 기존에는 [2000, 3000] 이었으나, 이제는 설정된 최대 갯수(약 25000)를 사용
+            # Coarse Scanning    
+            #  [2000, 3000] ,    ( 25000) 
             target_bars = local_config.get('max_bars_back', 3000)
             bars_list = [target_bars] 
             
-            # 범위 설정 헬퍼 함수 (Float 지원)
+            #     (Float )
             def get_range(val, step=2):
                 val = int(val)
                 low = max(1, val - step)
@@ -134,7 +135,7 @@ def execute_optimization_logic(current_config):
                         res.append(round(new_val, 2))
                     return sorted(list(set(res)))
 
-            # 3. 파라미터 범위 설정
+            # 3.   
             rsi_range = get_range(local_config['rsi_length'])
             wt_ch_range = get_range(local_config['wt_channel_len'])
             wt_avg_range = get_range(local_config['wt_avg_len'])
@@ -156,7 +157,7 @@ def execute_optimization_logic(current_config):
             total_iter = (len(bars_list) * len(rsi_range) * len(wt_ch_range) * len(wt_avg_range) * len(cci_range) * len(adx_len_range))
             count = 0
             
-            # [Fix] 데이터 재로딩 (fetch logic handles caching internally, but we need fresh specific tf)
+            # [Fix]   (fetch logic handles caching internally, but we need fresh specific tf)
             # data_loader.fetch_raw_data uses 'fetch_OHLCV' which takes timeframe.
             # So we must call fetch for EACH timeframe loop.
             try:
@@ -166,7 +167,7 @@ def execute_optimization_logic(current_config):
                     continue
                 
                 # [WFA OOS Split inside Loop]
-                # 타임프레임별 데이터에 대해서도 동일 비율 적용
+                #      
                 df_optim = df_raw_tf
                 if len(df_raw_tf) > wfa_window:
                     df_optim = df_raw_tf.tail(wfa_window).copy().reset_index(drop=True)
@@ -176,7 +177,7 @@ def execute_optimization_logic(current_config):
                 
                 if current_total >= (min_is_size + current_oos_size):
                      split_idx = current_total - current_oos_size
-                     # 최적화에는 IS 데이터만 사용
+                     #  IS  
                      df_optim = df_optim.iloc[:split_idx].copy().reset_index(drop=True)
             except Exception as e:
                 print(f"      Error fetching data for {tf}: {e}")
@@ -195,24 +196,27 @@ def execute_optimization_logic(current_config):
                 
                 if use_cpp:
                     # Construct ranges for C++
-                    # keys must match optimizer.cpp expectations: "rsi", "wt_ch", "wt_avg", "cci", "adx_len", "adx_th", "k", "lev"
-                    ranges = {
-                        "rsi": list(rsi_range),
-                        "wt_ch": list(wt_ch_range),
-                        "wt_avg": list(wt_avg_range),
-                        "cci": list(cci_range),
-                        "adx_len": list(adx_len_range),
-                        "adx_th": list(adx_th_range),
-                        "adx_th": list(adx_th_range),
-                        "k": [12, 14, 16, 18, 20, 24], # [Dense Search]
-                        "lev": list(leverage_range),
-                        "sl_multiplier": list(sl_mult_range), # [NEW]
-                        "ema_period": [80.0, 100.0, 120.0, 140.0, 160.0, 180.0, 200.0], # [Dense Search]
-                        "use_ema_filter": [0.0, 1.0], # [Toggle]
-                        "use_adx_filter": [0.0, 1.0]  # [Toggle]
-                    }
+                    # keys must match optimizer.cpp expectations
+                    if custom_ranges:
+                        ranges = custom_ranges
+                    else:
+                        ranges = {
+                            "rsi": list(rsi_range),
+                            "wt_ch": list(wt_ch_range),
+                            "wt_avg": list(wt_avg_range),
+                            "cci": list(cci_range),
+                            "adx_len": list(adx_len_range),
+                            "adx_th": list(adx_th_range),
+                            "chop_threshold": [40.0, 45.0, 50.0, 55.0, 60.0],
+                            "k": list(k_range),
+                            "lev": list(leverage_range),
+                            "sl_multiplier": list(sl_mult_range),
+                            "ema_period": [80.0, 100.0, 120.0, 140.0, 160.0, 180.0, 200.0],
+                            "use_ema_filter": [0.0, 1.0],
+                            "use_adx_filter": [0.0, 1.0]
+                        }
                     
-                    print(f"      🚀 C++ Coarse Scan ({bars} bars)...", end='\r')
+                    print(f"       C++ Coarse Scan ({bars} bars)...", end='\r')
                     
                     # Call C++ (Returns List of Dicts)
                     res_list = cpp_engine.optimize_grid_search(
@@ -228,6 +232,7 @@ def execute_optimization_logic(current_config):
                         float(local_config.get('tp_ratio', 0.99)),
                         float(getattr(cfg, 'FEE_RATE', 0.001)),
                         int(cfg.OPTIMIZER_MIN_TRADES),
+                        int(getattr(cfg, 'OPTIMIZER_MAX_TRADES', 2500)),
                         float(cfg.OPTIMIZER_MAX_MDD),
                         int(cfg.EMA_FILTER_PERIOD),
                         int(getattr(cfg, 'ATR_PERIOD', 14)),
@@ -248,7 +253,7 @@ def execute_optimization_logic(current_config):
                             best_params.update(res['best_params'])
                             best_params['max_bars_back'] = bars
                         
-                    sys.stdout.write(f"\r      🚀 C++ Coarse Scan Done! Best: {best_balance:.2f}          \n")
+                    sys.stdout.write(f"\r       C++ Coarse Scan Done! Best: {best_balance:.2f}          \n")
 
                 else:
                     # Python Fallback skipped
@@ -256,10 +261,10 @@ def execute_optimization_logic(current_config):
 
             # 5. [Fine-Tuning]
             if best_score == -999:
-                print(f"      ⚠️ No valid results for {tf}/{strategy_name}.")
+                print(f"      [Warning] No valid results for {tf}/{strategy_name}.")
                 continue
                 
-            print(f"      🔍 Fine-Tuning... (Best: {best_balance:.2f})")
+            print(f"       Fine-Tuning... (Best: {best_balance:.2f})")
             
             ft_rsi = get_fine_range(best_params['rsi_length'], count=1)
             ft_wt_ch = get_fine_range(best_params['wt_channel_len'], count=1)
@@ -294,7 +299,8 @@ def execute_optimization_logic(current_config):
                     "adx_th": list(ft_adx_th),
                     "k": list(ft_k),
                     "lev": list(ft_lev),
-                    "sl_multiplier": list(ft_sl_mult) # [NEW]
+                    "sl_multiplier": list(ft_sl_mult), # [NEW]
+                    "chop_threshold": [best_params.get("chop_threshold", 50.0)] # Fixed for FT or range?
                 }
                 
                 ft_bars = best_params['max_bars_back']
@@ -313,6 +319,7 @@ def execute_optimization_logic(current_config):
                         float(best_params.get('tp_ratio', 0.99)),
                         float(getattr(cfg, 'FEE_RATE', 0.001)),
                         int(cfg.OPTIMIZER_MIN_TRADES),
+                        int(getattr(cfg, 'OPTIMIZER_MAX_TRADES', 2500)),
                         float(cfg.OPTIMIZER_MAX_MDD),
                         int(cfg.EMA_FILTER_PERIOD),
                         int(getattr(cfg, 'ATR_PERIOD', 14)),
@@ -371,9 +378,9 @@ def execute_optimization_logic(current_config):
             else:
                  pass # Fallback skipped per migration request
             
-            print(f"      ✅ 완료! Result: {best_balance:.2f} (Lev: {best_params.get('leverage')}x)")
+            print(f"      [Done] Result: {best_balance:.2f} (Lev: {best_params.get('leverage')}x)")
             
-            # 전역 비교
+            #  
             if best_score > global_best_score:
                 global_best_score = best_score
                 global_best_params = best_params.copy()
@@ -383,18 +390,18 @@ def execute_optimization_logic(current_config):
                 global_best_balance = best_balance
 
     # === [Final Report] ===
-    print(f"\n🏆 최종 최적화 결과 (Multi-TF & Multi-Strategy) 🏆")
+    print(f"\n[Result] Final Optimization Result (Multi-TF & Multi-Strategy) [Result]")
     sel_strat = global_best_params.get('active_strategy', 'UNKNOWN')
     sel_tf = global_best_params.get('timeframe', 'UNKNOWN')
     wr = (global_best_wins / global_best_trades * 100) if global_best_trades > 0 else 0
-    print(f"   👉 선택된 전략: {sel_strat.upper()} @ {sel_tf}")
-    print(f"   👉 성과: Bal {global_best_balance:.2f} | WR {wr:.1f}% ({global_best_wins}/{global_best_trades}) | MDD {global_best_mdd*100:.1f}%")
-    print(f"   👉 레버리지: {global_best_params.get('leverage')}x")
+    print(f"   => Selected Strategy: {sel_strat.upper()} @ {sel_tf}")
+    print(f"   => Performance: Bal {global_best_balance:.2f} | WR {wr:.1f}% ({global_best_wins}/{global_best_trades}) | MDD {global_best_mdd*100:.1f}%")
+    print(f"   => Leverage: {global_best_params.get('leverage')}x")
 
     # [OOS Validation Report]
     if global_best_score != -999:
         try:
-            print(f"\n🔮 [Out-of-Sample] 검증 결과 확인 중... (미래 5000개 데이터 테스트)")
+            print(f"\n[OOS] [Out-of-Sample] Verifying OOS Results... (Testing Future 5000 bars)")
             # Fetch full 15000 for winning timeframe
             best_tf = global_best_params.get('timeframe', '5m')
             df_full_final = fetch_raw_data(cfg.SYMBOL, best_tf, cfg.MAX_FETCH_LIMIT)
@@ -403,16 +410,16 @@ def execute_optimization_logic(current_config):
                 oos_size_final = 5000
                 warmup_buffer = 500 
                 
-                # OOS 시작점
+                # OOS 
                 split_idx_final = len(df_full_final) - oos_size_final
                 
-                # Buffer 포함 시작점 (Warmup용)
+                # Buffer   (Warmup)
                 calc_start_idx = max(0, split_idx_final - warmup_buffer)
                 
-                # Buffer 포함하여 슬라이싱 -> 지표 계산 -> 앞부분(Buffer) 제거
+                # Buffer   ->   -> (Buffer) 
                 calc_start_idx = max(0, split_idx_final - warmup_buffer)
                 
-                # [WFA] 마지막 부분 사용
+                # [WFA]   
                 df_oos_extended = df_full_final.iloc[calc_start_idx:].copy()
                 
                 # Check timeframe consistency (ensure we have enough OOS bars)
@@ -449,19 +456,116 @@ def execute_optimization_logic(current_config):
                     # Calculate Win Rate safely
                     oos_wr = (oos_wins / oos_trades * 100) if oos_trades > 0 else 0
                     
-                    print(f"   ✅ OOS 성과: Bal {oos_bal:.2f} | WR {oos_wr:.1f}% ({oos_trades} trades) | MDD {oos_mdd*100:.2f}%")
+                    print(f"   [Done] OOS Performance: Bal {oos_bal:.2f} | WR {oos_wr:.1f}% ({oos_trades} trades) | MDD {oos_mdd*100:.2f}%")
 
                     
                     if oos_bal > getattr(cfg, 'START_BALANCE', 100.0):
-                        print("   🎉 축하합니다! 이 설정은 본 적 없는 미래 데이터에서도 수익을 냈습니다.")
+                        print("   [Success] Congratulations! Profit on unseen data!.")
                     else:
-                        print("   ⚠️ 주의: 과거 데이터(IS)에서는 좋았으나, 미래 데이터(OOS)에서는 손실이 났습니다. 과최적화 가능성 있음.")
+                        print("   [Warning] Warning: Good in IS but, Loss in OOS. Potential Overfitting.")
                 else:
-                    print("   ⚠️ OOS 데이터가 너무 적어 검증을 생략합니다.")
+                    print("   [Warning] Skipping OOS validation (Not enough data).")
             else:
-                print("   ⚠️ 데이터가 부족하여 OOS 검증을 수행지 못했습니다.")
+                print("   [Warning] Not enough data for OOS validation.")
         except Exception as e:
-            print(f"   ⚠️ OOS 검증 중 오류 발생: {e}")
+            print(f"   [Warning] OOS Validation Error: {e}")
 
 
     return global_best_params, global_best_wins, global_best_trades, global_best_mdd, global_best_balance, global_best_score
+
+def execute_smart_optimization(current_config):
+    """
+    Two-Phase Smart Optimization (Strategy A):
+    Phase 1: Optimize Indicators & Model (RSI, WT, CCI, ADX_Len, K) with fixed Filters.
+    Phase 2: Optimize Filters & Risk (ADX_Th, Chop, EMA, Lev, SL) with best Indicators.
+    """
+    print("\n   [Smart Optimization] Starting Phase 1: Indicators & Model...")
+    
+    # 1. Phase 1 Ranges
+    # Optimize: RSI, WT, CCI, ADX_Len, Neighbors
+    # Fix: ADX_Th, Chop, Lev, SL, EMA, Toggles
+    
+    # Helper to get base ranges
+    # We use local helper from execute_optimization logic? No, need to duplicate or expose.
+    # For simplicity, we define ranges here using same logic or just reduced ranges.
+    
+    # Let's extract range generation logic if possible, but for now hardcode "Standard" scan ranges
+    # derived from config.
+    
+    def get_range(val, step=2):
+        val = int(val)
+        low = max(1, val - step)
+        return sorted(list(set([low, val, val + step])))
+
+    # Current Config
+    cfg_rsi = int(current_config.get('rsi_length', 14))
+    cfg_wt_ch = int(current_config.get('wt_channel_len', 10))
+    cfg_wt_avg = int(current_config.get('wt_avg_len', 21))
+    cfg_cci = int(current_config.get('cci_length', 20))
+    cfg_adx_len = int(current_config.get('adx_length', 14))
+    cfg_k = int(current_config.get('neighbors', 8))
+    
+    # Phase 1 Ranges
+    ranges_p1 = {
+        "rsi": get_range(cfg_rsi),
+        "wt_ch": get_range(cfg_wt_ch),
+        "wt_avg": get_range(cfg_wt_avg),
+        "cci": get_range(cfg_cci, 3),
+        "adx_len": get_range(cfg_adx_len),
+        "k": [8, 12, 16], # Coarse scan for K
+        # Fixed
+        "adx_th": [25],
+        "chop_threshold": [50.0],
+        "lev": [current_config.get('leverage', 1)],
+        "sl_multiplier": [current_config.get('sl_multiplier', 0.0)],
+        "ema_period": [int(current_config.get('ema_period', 140))], # Default
+        "use_ema_filter": [1.0],
+        "use_adx_filter": [1.0]
+    }
+    
+    # Run Phase 1
+    res_p1 = execute_optimization_logic(current_config, custom_ranges=ranges_p1)
+    
+    if not res_p1:
+        print("   [Smart Optimization] Phase 1 Failed. Returning None.")
+        return None
+        
+    best_p1_params = res_p1[0] # extracting parameters
+    print(f"   [Smart Optimization] Phase 1 Done. Best Score: {res_p1[5]:.2f}")
+    
+    # 2. Phase 2 Ranges
+    # Fix: Indicators (to Best P1)
+    # Optimize: Filters, Risk
+    print("\n   [Smart Optimization] Starting Phase 2: Filters & Risk...")
+    
+    best_rsi = int(best_p1_params['rsi_length'])
+    best_wt_ch = int(best_p1_params['wt_channel_len'])
+    best_wt_avg = int(best_p1_params['wt_avg_len'])
+    best_cci = int(best_p1_params['cci_length'])
+    best_adx_len = int(best_p1_params['adx_length'])
+    best_k = int(best_p1_params['neighbors'])
+    
+    ranges_p2 = {
+        # Fixed to P1 Winners
+        "rsi": [best_rsi],
+        "wt_ch": [best_wt_ch],
+        "wt_avg": [best_wt_avg],
+        "cci": [best_cci],
+        "adx_len": [best_adx_len],
+        "k": [best_k],
+        # Optimize Filters
+        "adx_th": [20, 25, 30],
+        "chop_threshold": [40.0, 50.0, 60.0],
+        "ema_period": [80.0, 140.0, 200.0],
+        "use_ema_filter": [0.0, 1.0],
+        "use_adx_filter": [0.0, 1.0],
+        # Optimize Risk
+        "lev": getattr(cfg, 'LEVERAGE_TEST_RANGE', [1, 2, 3]),
+        "sl_multiplier": getattr(cfg, 'ATR_TRAIL_SCAN_RANGE', [3.0, 4.0, 5.0]) if getattr(cfg, 'USE_ATR_SL', False) else [0.0]
+    }
+    
+    # Run Phase 2
+    res_p2 = execute_optimization_logic(current_config, custom_ranges=ranges_p2)
+    
+    print(f"   [Smart Optimization] Phase 2 Done. Best Score: {res_p2[5]:.2f}")
+    return res_p2

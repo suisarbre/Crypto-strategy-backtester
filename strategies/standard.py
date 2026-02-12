@@ -9,39 +9,79 @@ class StandardLogic(BaseTradeLogic):
     - 스위칭: 반대 신호 발생 시 즉시 청산 후 진입
     - 부분 익절: 신호 0 발생 시 50% 부분 청산 (1회)
     """
-    def process_signal(self, state, price, signal, atr=0.0):
+    def process_signal(self, state, price, signal, atr=0.0, extras=None):
         logs = []
+        if extras is None: extras = {}
         
-        # [NEW] Trailing Stop Logic (Activated after Partial Exit)
+        # [NEW] Check Config for Hybrid Strategy
+        use_hybrid = state.config.get('USE_HYBRID_EXIT', False)
+        
+        # [NEW] Trailing Stop / Hybrid Logic (Activated after Partial Exit)
         if state.partial_done:
-            ts_mult = getattr(state.config, 'attr_trail_multiplier', 3.0) 
-            # If not in config object, try global fallback or default
-            ts_mult = state.config.get('atr_trail_multiplier', 3.0)
             
-            # 1. Update Trailing Stop Price
-            if state.position == 1: # Long
-                new_ts = price - (atr * ts_mult)
-                # Trail Up Only
-                if new_ts > state.trailing_stop_price:
-                    state.trailing_stop_price = new_ts
+            # --- Option A: Hybrid Strategy (SuperTrend Exit) ---
+            if use_hybrid and 'supertrend_trend' in extras:
+                current_trend = extras['supertrend_trend'] # 1: Up, -1: Down
                 
-                # Check Hit
-                if price <= state.trailing_stop_price:
+                # 1. Check Breakeven Floor (Safety First)
+                floor_hit = False
+                if state.position == 1: # Long
+                    if price <= state.avg_entry: # Hit Entry
+                        floor_hit = True
+                elif state.position == -1: # Short
+                    if price >= state.avg_entry: # Hit Entry
+                        floor_hit = True
+                        
+                if floor_hit:
                     lev_pnl = self.get_pnl(state, price)
-                    logs.append(state.close_position(price, "TrailingStop", lev_pnl))
+                    logs.append(state.close_position(price, "BreakevenFloor", lev_pnl))
                     return logs
+
+                # 2. Check Trend Reversal (The "Ride" Logic)
+                trend_reversal = False
+                if state.position == 1 and current_trend == -1: # Long but Trend turned Down
+                    trend_reversal = True
+                elif state.position == -1 and current_trend == 1: # Short but Trend turned Up
+                    trend_reversal = True
                     
-            elif state.position == -1: # Short
-                new_ts = price + (atr * ts_mult)
-                # Trail Down Only
-                if state.trailing_stop_price == 0 or new_ts < state.trailing_stop_price:
-                    state.trailing_stop_price = new_ts
-                    
-                # Check Hit
-                if price >= state.trailing_stop_price:
+                if trend_reversal:
                     lev_pnl = self.get_pnl(state, price)
-                    logs.append(state.close_position(price, "TrailingStop", lev_pnl))
+                    logs.append(state.close_position(price, "SuperTrendExit", lev_pnl))
                     return logs
+
+            # --- Option B: Standard ATR Trailing Stop ---
+            else:
+                # [Fix] Use 'sl_multiplier' (optimized) as default if 'atr_trail_multiplier' is not explicitly set separate.
+                # This ensures consistency with C++ Backtester which uses sl_multiplier for both.
+                fallback_mult = state.config.get('sl_multiplier', 3.0)
+                if fallback_mult <= 0: fallback_mult = 3.0
+                
+                ts_mult = state.config.get('atr_trail_multiplier', fallback_mult)
+                
+                # 1. Update Trailing Stop Price
+                if state.position == 1: # Long
+                    new_ts = price - (atr * ts_mult)
+                    # Trail Up Only
+                    if new_ts > state.trailing_stop_price:
+                        state.trailing_stop_price = new_ts
+                    
+                    # Check Hit
+                    if price <= state.trailing_stop_price:
+                        lev_pnl = self.get_pnl(state, price)
+                        logs.append(state.close_position(price, "TrailingStop", lev_pnl))
+                        return logs
+                        
+                elif state.position == -1: # Short
+                    new_ts = price + (atr * ts_mult)
+                    # Trail Down Only
+                    if state.trailing_stop_price == 0 or new_ts < state.trailing_stop_price:
+                        state.trailing_stop_price = new_ts
+                        
+                    # Check Hit
+                    if price >= state.trailing_stop_price:
+                        lev_pnl = self.get_pnl(state, price)
+                        logs.append(state.close_position(price, "TrailingStop", lev_pnl))
+                        return logs
 
         # 3-1. 포지션 진입/청산/스위칭
         if signal == 1:
@@ -77,15 +117,28 @@ class StandardLogic(BaseTradeLogic):
                 state.partial_done = True
                 state.partial_pnl = lev_pnl
                 
-                # [NEW] Set Initial Trailing Stop to Breakeven (or Entry)
-                # 안전하게 본절+@로 설정
+                # [History]
+                try:
+                    state.record_partial_exit(price, lev_pnl)
+                except AttributeError: pass
+                
+                # [Match C++] Reset Trailing Stop & Secure Breakeven
+                # C++ logic: 
+                # trailing_stop_price = price - (current_atr * sl_multiplier);
+                # if (trailing_stop_price < avg_entry) trailing_stop_price = avg_entry;
+                
+                ts_mult = state.config.get('sl_multiplier', 3.0)
+                if ts_mult <= 0: ts_mult = 3.0
+                
                 if state.position == 1:
-                    state.trailing_stop_price = max(state.trailing_stop_price, state.avg_entry)
-                else:
-                    state.trailing_stop_price = min(state.trailing_stop_price, state.avg_entry)
+                    new_ts = price - (atr * ts_mult)
+                    state.trailing_stop_price = max(new_ts, state.avg_entry)
+                elif state.position == -1:
+                    new_ts = price + (atr * ts_mult)
+                    state.trailing_stop_price = min(new_ts, state.avg_entry)
                 
                 est_profit = (state.balance * 0.5) * lev_pnl
-                msg = f"🌊 [Partial Exit] 50% Close @ {price} (ROI: {lev_pnl*100:.2f}% | ${est_profit:+.2f}) -> TS Active"
+                msg = f"🌊 [Partial Exit] 50% Close @ {price} (ROI: {lev_pnl*100:.2f}% | ${est_profit:+.2f}) -> TS Reset to {state.trailing_stop_price:.2f}"
                 logs.append(msg)
                 
                 if state.logger:

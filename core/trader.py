@@ -191,13 +191,17 @@ class PaperTrader:
         price = df['close'].iloc[-1]
         atr_val = df['atr'].iloc[-1] if 'atr' in df.columns else 0.0 # [NEW]
         
+        # [NEW] Hybrid Strategy Info
+        st_trend = df['supertrend_trend'].iloc[-1] if 'supertrend_trend' in df.columns else 0
+        extras = {'supertrend_trend': st_trend}
+        
         # Critical Section: 매매 실행 및 상태 변경
         with self.lock:
-            self.execute_trade_logic(sig, price, atr_val)
+            self.execute_trade_logic(sig, price, atr_val, extras)
 
-    def execute_trade_logic(self, sig, price, atr=0.0):
+    def execute_trade_logic(self, sig, price, atr=0.0, extras=None):
         # [Refactor] 모든 매매 로직 위임
-        logs = self.state.process_tick(price, signal=sig, current_atr=atr)
+        logs = self.state.process_tick(price, signal=sig, current_atr=atr, extras=extras)
         for log in logs:
             print(f" {log}")
         

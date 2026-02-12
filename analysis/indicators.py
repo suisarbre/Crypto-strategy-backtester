@@ -48,24 +48,29 @@ def add_indicators(df, conf):
         df['kernel_rising'] = True
         df['kernel_falling'] = True
 
-    # [NEW] Choppiness Index (14)
-    # 100 * Log10(Sum(ATR, n) / (MaxHigh - MinLow)) / Log10(n)
+    # [NEW] Choppiness Index (100 * Log10(Sum(TR, n) / (MaxHigh - MinLow)) / Log10(n))
     chop_len = 14
+    # Calculate True Range (TR)
+    df['h-l'] = df['high'] - df['low']
+    df['h-pc'] = abs(df['high'] - df['close'].shift(1))
+    df['l-pc'] = abs(df['low'] - df['close'].shift(1))
+    df['tr'] = df[['h-l', 'h-pc', 'l-pc']].max(axis=1)
+    
     df['high_len'] = df['high'].rolling(window=chop_len).max()
     df['low_len'] = df['low'].rolling(window=chop_len).min()
-    df['atr_sum'] = df['atr'].rolling(window=chop_len).sum() # ATR is already calc above
-    # Avoid zero division
+    df['tr_sum'] = df['tr'].rolling(window=chop_len).sum()
+    
     range_len = df['high_len'] - df['low_len']
     range_len = range_len.replace(0, 0.0001) 
     
-    df['chop'] = 100 * np.log10(df['atr_sum'] / range_len) / np.log10(chop_len)
+    df['chop'] = 100 * np.log10(df['tr_sum'] / range_len) / np.log10(chop_len)
     df['chop'] = df['chop'].fillna(50)
 
     # [NEW] SuperTrend (Basic implementation for Trend Filter)
     # ATR period 10, Multiplier 3 (Standard)
     # Can optmize later
     st_period = 10
-    st_mult = 3.0
+    st_mult = getattr(cfg, 'SUPERTREND_FACTOR', 3.0) # Configurable Multiplier
     st_atr = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=st_period).fillna(0)
     
     # Calculate Basic Upper/Lower Bands

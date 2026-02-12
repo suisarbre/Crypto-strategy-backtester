@@ -32,6 +32,9 @@ class TradeStateManager:
         self.entry_leverage = 1 # 진입 시점 레버리지
         self.entry_atr = 0.0    # [NEW] 진입 시점 ATR
         
+        # [History] 실제/백테스트 체결 내역 저장
+        self.trade_history = []
+        
         # 통계
         self.wins = 0
         self.trades = 0
@@ -74,7 +77,7 @@ class TradeStateManager:
                 if self.logic is None or not isinstance(self.logic, target_cls):
                     self.logic = target_cls()
 
-    def process_tick(self, price, signal=None, current_atr=0.0):
+    def process_tick(self, price, signal=None, current_atr=0.0, **kwargs):
         """
         매 틱(또는 캔들)마다 호출되어 상태를 업데이트합니다.
         
@@ -213,6 +216,18 @@ class TradeStateManager:
         msg = self.close_position(price, reason, lev_pnl)
         return msg
 
+    def record_partial_exit(self, price, pnl_pct):
+        """Standard/Hybrid Strategy에서 부분 청산 시 호출"""
+        import time
+        self.trade_history.append({
+            'time': int(time.time()),
+            'type': 'PARTIAL',
+            'side': 'LONG' if self.position == 1 else 'SHORT',
+            'price': price,
+            'pnl': pnl_pct,
+            'desc': 'Partial'
+        })
+
     def save_params(self, params):
         """
         [WFA] 최적화된 파라미터를 JSON 파일로 저장합니다.
@@ -237,7 +252,7 @@ class TradeStateManager:
                     
                 # 기존 config 업데이트 (덮어쓰기)
                 self.config.update(saved_params)
-                print(f"📂 [System] Loaded best params from {path}")
+                # print(f"📂 [System] Loaded best params from {path}") # [Silenced] User Request
                 
                 # 전략 로직 등 업데이트 필요 시 호출
                 self.update_config(self.config)

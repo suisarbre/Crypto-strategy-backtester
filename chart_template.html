@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Optimization Results</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-family: sans-serif;
+        }
+
+        #chart {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #333;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 5px;
+        }
+
+        .stat-box {
+            flex: 1;
+            text-align: center;
+        }
+
+        .label {
+            font-size: 0.8em;
+            color: #888;
+        }
+
+        .value {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+
+        .green {
+            color: #4caf50;
+        }
+
+        .red {
+            color: #f44336;
+        }
+    </style>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+
+<body>
+    <div class="stats">
+        <div class="stat-box">
+            <div class="label">Balance</div>
+            <div class="value" id="balance">---</div>
+        </div>
+        <div class="stat-box">
+            <div class="label">Net Profit</div>
+            <div class="value" id="pnl">---</div>
+        </div>
+        <div class="stat-box">
+            <div class="label">Trades</div>
+            <div class="value" id="trades">---</div>
+        </div>
+        <div class="stat-box">
+            <div class="label">Win Rate</div>
+            <div class="value" id="winrate">---</div>
+        </div>
+        <div class="stat-box">
+            <div class="label">MDD</div>
+            <div class="value" id="mdd">---</div>
+        </div>
+    </div>
+
+    <div id="chart"></div>
+
+    <script>
+        // Data Injected Here
+        const candleData = {{ CANDLE_DATA }};
+        const markerData = {{ MARKER_DATA }};
+        const stats = {{ STATS_DATA }};
+
+        // Update Stats
+        document.getElementById('balance').innerText = '$' + stats.balance.toFixed(2);
+
+        const pnl = stats.balance - stats.start_balance;
+        const pnlEl = document.getElementById('pnl');
+        pnlEl.innerText = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+        pnlEl.className = 'value ' + (pnl >= 0 ? 'green' : 'red');
+
+        document.getElementById('trades').innerText = stats.trades;
+        document.getElementById('winrate').innerText = stats.win_rate.toFixed(1) + '%';
+        document.getElementById('mdd').innerText = (stats.mdd * 100).toFixed(2) + '%';
+
+        // Create Chart
+        try {
+            const chartContainer = document.getElementById('chart');
+            const chart = LightweightCharts.createChart(chartContainer, {
+                layout: {
+                    background: { type: 'solid', color: '#1a1a1a' },
+                    textColor: '#d1d4dc',
+                },
+                grid: {
+                    vertLines: { color: '#2B2B43' },
+                    horzLines: { color: '#2B2B43' },
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                },
+                timeScale: {
+                    borderColor: '#485c7b',
+                    timeVisible: true,
+                },
+            });
+
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#4caf50',
+                downColor: '#f44336',
+                borderDownColor: '#f44336',
+                borderUpColor: '#4caf50',
+                wickDownColor: '#f44336',
+                wickUpColor: '#4caf50',
+            });
+
+            // Validate Data
+            if (!candleData || candleData.length === 0) {
+                throw new Error("No candle data available.");
+            }
+
+            candleSeries.setData(candleData);
+
+            if (markerData && markerData.length > 0) {
+                candleSeries.setMarkers(markerData);
+            }
+
+            // Auto-fit
+            chart.timeScale().fitContent();
+
+            // Resize handler
+            window.addEventListener('resize', () => {
+                chart.applyOptions({ width: chartContainer.clientWidth });
+            });
+        } catch (e) {
+            console.error(e);
+            document.getElementById('chart').innerHTML = `<div style="color: red; padding: 20px;">Error rendering chart: ${e.message}</div>`;
+        }
+    </script>
+</body>
+
+</html>
