@@ -46,7 +46,9 @@ py::array_t<int> FastKNN::predict(py::array_t<double> X) {
         for (const auto& train_point : train_data) {
             double dist = 0.0;
             for (size_t f = 0; f < n_features; ++f) {
-                dist += std::abs(current_test_ptr[f] - train_point.features[f]); 
+                // Lorentzian distance: log(1 + |a - b|) per feature dimension
+                // Robust to outliers — compresses large differences via log
+                dist += std::log(1.0 + std::abs(current_test_ptr[f] - train_point.features[f]));
             }
             neighbors.push_back({dist, train_point.label});
         }
@@ -93,9 +95,9 @@ std::vector<int> FastKNN::predict_internal(const std::vector<std::vector<double>
 
         for (const auto& train_point : train_data) {
             double dist = 0.0;
-            // Optimization: Unroll loop or use vectorization if possible, but basic loop is fine
             for (size_t f = 0; f < n_features && f < current_feat.size(); ++f) {
-                dist += std::abs(current_feat[f] - train_point.features[f]); 
+                // Lorentzian distance: log(1 + |a - b|) per feature dimension
+                dist += std::log(1.0 + std::abs(current_feat[f] - train_point.features[f]));
             }
             local_neighbors.push_back({dist, train_point.label});
         }

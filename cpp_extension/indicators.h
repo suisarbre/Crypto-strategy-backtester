@@ -23,6 +23,9 @@ namespace indicators {
     // Kernel Regression (Rational Quadratic)
     std::vector<double> rq_kernel(const std::vector<double>& src, double relative_weight, int lookback, int lookback_mult);
 
+    // Kernel direction signal: 1=rising, -1=falling, 0=flat
+    std::vector<double> kernel_direction(const std::vector<double>& src, double relative_weight, int lookback, int lookback_mult);
+
     // ATR
     std::vector<double> atr(const std::vector<double>& high, const std::vector<double>& low, const std::vector<double>& close, int period);
 

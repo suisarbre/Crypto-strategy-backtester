@@ -169,24 +169,32 @@ namespace indicators {
     }
 
     std::vector<double> rq_kernel(const std::vector<double>& src, double relative_weight, int lookback, int lookback_mult) {
+        // Rational Quadratic Kernel Regression (Nadaraya-Watson Estimator)
+        // Original Pine Script formula:
+        //   w = (1 + d^2 / (h^2 * 2 * alpha))^(-alpha)
+        // where h = lookback (bandwidth), alpha = relative_weight (shape)
         size_t n = src.size();
         std::vector<double> y_hat(n);
         
         // Initialize with source
         for(size_t i=0; i<n; ++i) y_hat[i] = src[i];
         
+        double h_sq = (double)lookback * (double)lookback; // h^2
+        
         for (size_t i = 0; i < n; ++i) {
             double current_weight = 0.0;
             double cumulative_weight = 0.0;
             
-            // Standardized lookback range: lookback * multiplier
-            long start_j = (long)i - (long)(lookback * lookback_mult); 
+            // Window: startAtBar + lookback bars (Pine: for i = 0 to startAtBar + lookback)
+            int window = lookback * lookback_mult + lookback;
+            long start_j = (long)i - (long)window; 
             if (start_j < 0) start_j = 0;
             
             for (size_t j = (size_t)start_j; j <= i; j++) {
                 double diff = (double)i - (double)j;
+                // Correct RQ kernel: K(d) = (1 + d^2 / (2 * alpha * h^2))^(-alpha)
                 double w = std::pow(
-                    1.0 + (std::pow(diff, 2) / (2.0 * std::pow(relative_weight, 2))), 
+                    1.0 + (diff * diff) / (h_sq * 2.0 * relative_weight), 
                     -relative_weight
                 );
                 current_weight += src[j] * w;
@@ -198,6 +206,18 @@ namespace indicators {
             }
         }
         return y_hat;
+    }
+
+    std::vector<double> kernel_direction(const std::vector<double>& src, double relative_weight, int lookback, int lookback_mult) {
+        auto y_hat = rq_kernel(src, relative_weight, lookback, lookback_mult);
+        size_t n = y_hat.size();
+        std::vector<double> dir(n, 0.0);
+        for (size_t i = 1; i < n; ++i) {
+            if (y_hat[i] > y_hat[i - 1])      dir[i] = 1.0;   // rising
+            else if (y_hat[i] < y_hat[i - 1]) dir[i] = -1.0;  // falling
+            // else 0.0 (flat)
+        }
+        return dir;
     }
 
     std::vector<double> atr(const std::vector<double>& high, const std::vector<double>& low, const std::vector<double>& close, int period) {

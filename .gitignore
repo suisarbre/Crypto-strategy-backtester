@@ -1,28 +1,73 @@
-# Secrets
+# ═══════════════════════════════════════════════════════════════
+#  Lorentzian Trading Bot – .gitignore
+# ═══════════════════════════════════════════════════════════════
+
+# ── Secrets & Keys ──
 secret_keys.py
 .env
-.ipynb_checkpoints/
+.env.*
 
-# Python
+# ── Python ──
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+*.egg
 
-# Build
+# ── C++ Build Artifacts ──
 build/
 dist/
 *.spec
+*.obj
+*.o
+*.so
+*.exp
+*.lib
+cpp_engine*.pyd
 
-# VS Code
+# ── Virtual Environment ──
+.venv/
+venv/
+env/
+
+# ── IDE ──
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Logs
+# ── Logs & Runtime Data ──
 logs/
 *.log
+build_log.txt
 
-# Temp
-temp/
-tmp/
+# ── Generated Data (CSV) ──
 *.csv
-!initial_data.csv
+chart_data/
+!strategies/**/*.json
+
+# ── Generated HTML Reports ──
+optimization_result.html
+chart_template.html
+
+# ── Test Diagnostics ──
+tests/diag_*.py
+tests/*_out.txt
+tests/smoke_benchmarks.py
+
+# ── Debug / Scratch Files ──
+_sanity.py
+gui/micro_test.py
+gui/debug_chart.py
+gui/standalone_test.html
+gui/chart.js
+
+# ── OS ──
+Thumbs.db
+.DS_Store
+*.tmp
+
+# ── Jupyter ──
+.ipynb_checkpoints/

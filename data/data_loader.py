@@ -6,12 +6,22 @@ import utils
 # [Network Fix] Force IPv4 (binanceus IPv6 error fix)
 utils.apply_patches()
 
-# 거래소 객체 생성
+# Exchange instance (with server-time sync to avoid -1021 timestamp errors)
 exchange = ccxt.binanceus({
     'apiKey': cfg.API_KEY,
     'secret': cfg.SECRET_KEY,
     'enableRateLimit': True,
+    'options': {
+        'adjustForTimeDifference': True,   # auto-sync clock offset
+        'recvWindow': 10000,               # 10s tolerance window
+    },
 })
+
+# Pre-load server time offset before first request
+try:
+    exchange.load_time_difference()
+except Exception:
+    pass
 
 def fetch_raw_data(symbol, timeframe, limit):
     try:
@@ -71,7 +81,7 @@ def fetch_raw_data(symbol, timeframe, limit):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
     except Exception as e:
-        print(f"[Error] 데이터 수집 실패: {e}")
+        print(f"[Error] Data fetch failed: {e}")
         return None
 
 def fetch_current_price(symbol):

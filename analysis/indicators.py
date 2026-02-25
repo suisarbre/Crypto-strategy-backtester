@@ -1,5 +1,12 @@
 # indicators.py
+# [LEGACY] This module is kept for backward compatibility with JsonStrategyLogic.
+# New Python strategies should implement their own indicator calculation or use a shared library.
 import numpy as np
+"""
+[DEPRECATED] 
+This module is kept for backward compatibility with legacy `JsonStrategyLogic` and `strategies.json` visualization.
+New strategies should use `cpp_extension` (via `IndicatorFactory`) or implement their own `calculate_indicators` method.
+"""
 import pandas as pd
 import ta
 import config as cfg
@@ -38,6 +45,8 @@ def add_indicators(df, conf):
     atr_period = getattr(cfg, 'ATR_PERIOD', 14)
     df['atr'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=atr_period).fillna(0)
     df['ema_200'] = ta.trend.ema_indicator(df['src'], window=getattr(cfg, 'EMA_FILTER_PERIOD', 200)).fillna(0)
+    # [FIX] Add EMA for strategy filter (dynamic period from conf)
+    df['ema'] = ta.trend.ema_indicator(df['close'], window=int(conf.get('ema_period', 200))).fillna(df['close'])
 
     if conf.get('use_kernel', False):
         mult = getattr(cfg, 'KERNEL_LOOKBACK_MULT', 5)
@@ -45,8 +54,10 @@ def add_indicators(df, conf):
         df['kernel_rising'] = df['kernel'] > df['kernel'].shift(1)
         df['kernel_falling'] = df['kernel'] < df['kernel'].shift(1)
     else:
-        df['kernel_rising'] = True
-        df['kernel_falling'] = True
+        # [FIX] Kernel disabled - use simple momentum
+        df['kernel'] = df['close']
+        df['kernel_rising'] = df['close'] > df['close'].shift(1)
+        df['kernel_falling'] = df['close'] < df['close'].shift(1)
 
     # [NEW] Choppiness Index (100 * Log10(Sum(TR, n) / (MaxHigh - MinLow)) / Log10(n))
     chop_len = 14
@@ -84,55 +95,101 @@ def add_indicators(df, conf):
     
     # Logic loop (A bit slow in Python, but needed for SuperTrend recursive logic)
     # Using simple recursive calculation (vectorization is hard for stateful ST)
-    # For speed, we might want to move this to C++ later or use a library that supports it efficiently.
-    # For now, let's use a simplified vectorized approximation or stick to standard library if available.
-    # 'pandas_ta' has supertrend, but 'ta' library might not.
-    # Let's skip heavy loop and use simple close > ema filter enhancement instead for now to stay fast?
-    # NO, user asked for "SuperTrend". We will implement a fast numba/numpy version if possible, or just standard loop.
-    # Since this is run on 5000 candles or optimization, loop is okay.
     
-    bu = basic_upper.values
-    bl = basic_lower.values
+    # Pre-calculate arrays for speed
+    high = df['high'].values
+    low = df['low'].values
     close = df['close'].values
+    upper = basic_upper.values
+    lower = basic_lower.values
+    supertrend = np.zeros(len(df))
+    final_upper = np.zeros(len(df))
+    final_lower = np.zeros(len(df))
     
-    # Final arrays
-    fu = np.zeros(len(df))
-    fl = np.zeros(len(df))
-    trend = np.zeros(len(df)) # 1: Up, -1: Down
-    
-    # Init first values
-    fu[0] = bu[0]
-    fl[0] = bl[0]
-    trend[0] = 1
+    # Initialize first values
+    supertrend[0] = close[0]
+    final_upper[0] = upper[0]
+    final_lower[0] = lower[0]
     
     for i in range(1, len(df)):
-        # Calculate Final Upper
-        if (bu[i] < fu[i-1]) or (close[i-1] > fu[i-1]):
-            fu[i] = bu[i]
+        # Final Upper Band
+        if basic_upper[i] < final_upper[i-1] or close[i-1] > final_upper[i-1]:
+            final_upper[i] = basic_upper[i]
         else:
-            fu[i] = fu[i-1]
+            final_upper[i] = final_upper[i-1]
             
-        # Calculate Final Lower
-        if (bl[i] > fl[i-1]) or (close[i-1] < fl[i-1]):
-            fl[i] = bl[i]
+        # Final Lower Band
+        if basic_lower[i] > final_lower[i-1] or close[i-1] < final_lower[i-1]:
+            final_lower[i] = basic_lower[i]
         else:
-            fl[i] = fl[i-1]
-            
-        # Determine Trend
-        prev_trend = trend[i-1]
-        if prev_trend == 1:
-            if close[i] < fl[i]:
-                trend[i] = -1
+             final_lower[i] = final_lower[i-1]
+             
+        # SuperTrend
+        if supertrend[i-1] == final_upper[i-1]:
+            if close[i] > final_upper[i]:
+                supertrend[i] = final_lower[i]
             else:
-                trend[i] = 1
-        else: # prev == -1
-            if close[i] > fu[i]:
-                trend[i] = 1
+                supertrend[i] = final_upper[i]
+        else:
+            if close[i] < final_lower[i]:
+                supertrend[i] = final_upper[i]
             else:
-                trend[i] = -1
-
-    df['supertrend_trend'] = trend
+                supertrend[i] = final_lower[i]
+                
+    df['supertrend'] = supertrend
     # 1 = UpTrend (Green), -1 = DownTrend (Red)
         
     df.dropna(inplace=True)
+    return df
+
+def add_dynamic_indicators(df, strategy_json, config=None):
+    """
+    Parses 'definitions.indicators' from strategy_json and adds them to the DataFrame.
+    """
+    if not strategy_json: return df
+    if config is None: config = {}
+    
+    try:
+        import json
+        if isinstance(strategy_json, str):
+            strat = json.loads(strategy_json)
+        else:
+            strat = strategy_json
+            
+        indicators = strat.get('definitions', {}).get('indicators', [])
+        
+        for ind in indicators:
+            name = ind.get('name')
+            type_ = ind.get('type')
+            source_col = ind.get('source', 'close')
+            
+            # Resolve Length (Handle int or string reference to config)
+            raw_length = ind.get('length', 14)
+            length = 14
+            
+            if isinstance(raw_length, int):
+                length = raw_length
+            elif isinstance(raw_length, str):
+                if raw_length.isdigit():
+                    length = int(raw_length)
+                else:
+                    # Look up in config (e.g., 'rsi_length' -> 14)
+                    length = int(config.get(raw_length, 14))
+            
+            # Map source (Handle 'high_low_close' for ATR)
+            if source_col not in df.columns and source_col != 'high_low_close':
+                continue
+                
+            if type_ == 'ema':
+                df[name] = ta.trend.ema_indicator(df[source_col], window=length).fillna(0)
+            elif type_ == 'sma':
+                df[name] = ta.trend.sma_indicator(df[source_col], window=length).fillna(0)
+            elif type_ == 'rsi':
+                df[name] = ta.momentum.rsi(df[source_col], window=length).fillna(50)
+            elif type_ == 'atr':
+                df[name] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=length).fillna(0)
+                
+    except Exception as e:
+        print(f"Error adding dynamic indicators: {e}")
+        
     return df

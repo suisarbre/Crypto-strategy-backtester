@@ -7,8 +7,8 @@ cpp_args = ['/O2', '/std:c++17', '/openmp']
 ext_modules = [
     Extension(
         "cpp_engine",
-        ["cpp_extension/bindings.cpp", "cpp_extension/knn.cpp", "cpp_extension/backtester.cpp", "cpp_extension/indicators.cpp", "cpp_extension/optimizer.cpp"],
-        include_dirs=[pybind11.get_include()],
+        ["cpp_extension/knn.cpp", "cpp_extension/optimizer.cpp", "cpp_extension/signal_evaluator.cpp", "cpp_extension/bindings.cpp", "cpp_extension/backtester.cpp", "cpp_extension/indicators.cpp", "cpp_extension/factory.cpp"],
+        include_dirs=[pybind11.get_include(), "cpp_extension"],
         language='c++',
         extra_compile_args=['/std:c++17', '/O2', '/openmp']
     ),

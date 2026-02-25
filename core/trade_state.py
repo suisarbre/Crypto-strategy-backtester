@@ -3,138 +3,291 @@ import config as cfg
 import strategies
 import json
 import os
+import threading
 
 class TradeStateManager:
     """
-    모든 매매 상태와 로직을 관리하는 클래스.
-    Trader(Live)와 Backtester에서 공통으로 사용.
+    Manages all trading state and logic.
+    Shared by Trader (live) and Backtester.
     """
     def __init__(self, config=None, logger=None):
         self.config = config if config else cfg.CURRENT_CONFIG.copy()
-        self.logger = logger # [NEW] Logger 주입
+        self.logger = logger # [NEW] Logger injection
         self.logic = None # [Fix] Initialize before load_params
         
-        # [WFA] 저장된 파라미터 로드
-        self.load_params()
+        # [Threading] Lock
+        self.lock = threading.RLock()
         
-        # [NEW] 전략 로직 선택
-        # config에 'active_strategy' 키가 있으면 사용, 없으면 cfg.ACTIVE_STRATEGY 사용
+        # [Session-Only] Don't load persisted params — start fresh each session.
+        # self.load_params()
+        
+        # [NEW] Select strategy logic
+        # Use 'active_strategy' key from config if present, otherwise fall back to cfg.ACTIVE_STRATEGY
         strategy_name = self.config.get('active_strategy', cfg.ACTIVE_STRATEGIES[0] if hasattr(cfg, 'ACTIVE_STRATEGIES') else 'standard')
-        # 혹시 AVAILABLE_STRATEGIES만 있고 active_strategy가 없을 경우 대비
+        # Fallback if AVAILABLE_STRATEGIES exists but active_strategy is missing
         if not strategy_name: strategy_name = 'standard'
         
         self.logic = strategies.get_strategy(strategy_name)
         
-        # 계좌 상태
+        # Account state
         self.balance = getattr(cfg, 'START_BALANCE', 100.0)
         self.position = 0  # 0: None, 1: Long, -1: Short
         self.avg_entry = 0.0
-        self.entry_leverage = 1 # 진입 시점 레버리지
-        self.entry_atr = 0.0    # [NEW] 진입 시점 ATR
+        self.entry_leverage = 1 # Leverage at entry
+        self.entry_atr = 0.0    # [NEW] ATR at entry
         
-        # [History] 실제/백테스트 체결 내역 저장
+        # [History] Store live/backtest trade records
         self.trade_history = []
         
-        # 통계
+        # Statistics
         self.wins = 0
         self.trades = 0
         
-        # 부분 청산 상태
+        # Partial exit state
         self.partial_done = False
         self.partial_pnl = 0.0
         self.trailing_stop_price = 0.0 # [NEW] Trailing Stop Price
         
-        # 최대 낙폭 계산용
-        # 최대 낙폭 계산용
+        # Max drawdown tracking
         self.peak_balance = self.balance
         self.max_drawdown = 0.0
         
-        # [NEW] 거래 일시정지 상태 (최적화 결과 손실 시 True)
+        # [NEW] Trading pause state (True when daily loss limit is hit)
         self.is_paused = False
         
-        # [NEW] 사용자 수동 정지 (재시작 명령 전까지 절대 재개 안됨)
+        # [NEW] User manual stop (never resumes until explicit restart command)
         self.is_manual_stop = False
+
+        # [Risk Management] Daily Loss Tracking
+        self.daily_start_balance = self.balance
+        self.last_trade_date = None # Track day change
 
     def get_active_timeframe(self):
         """
-        [NEW] 현재 적용해야 할 타임프레임을 반환합니다.
-        포지션이 있으면 진입 당시 타임프레임 유지, 없으면 현재 설정된 타임프레임 사용.
+        [NEW] Returns the currently active timeframe.
+        Uses the entry timeframe while in a position, otherwise uses the current config timeframe.
         """
         if self.position != 0 and self.entry_timeframe:
             return self.entry_timeframe
         return self.config.get('timeframe', '5m')
 
     def update_config(self, new_config):
-        self.config = new_config
-        
-        # [NEW] 설정 변경 시 로직도 업데이트
-        new_strat_name = self.config.get('active_strategy')
-        if new_strat_name:
-            # 현재 로직과 이름이 다르면 교체? (비교하기 어려우므로 그냥 재생성, 비용 낮음)
-            # 단, logic 클래스 인스턴스 타입 비교 가능
-            target_cls = strategies.STRATEGY_MAP.get(new_strat_name)
-            if target_cls:
-                if self.logic is None or not isinstance(self.logic, target_cls):
-                    self.logic = target_cls()
+        with self.lock:
+            self.config = new_config
+            
+            # [NEW] Update strategy logic on config change
+            new_strat_name = self.config.get('active_strategy')
+            if new_strat_name:
+                # Recreate strategy instance if name changed (low cost)
+                # Compare by class type
+                target_cls = strategies.STRATEGY_MAP.get(new_strat_name)
+                if target_cls:
+                    if self.logic is None or not isinstance(self.logic, target_cls):
+                        self.logic = target_cls()
 
-    def process_tick(self, price, signal=None, current_atr=0.0, **kwargs):
+    def process_tick(self, price, signal=None, current_atr=0.0, timestamp=None, **kwargs):
         """
-        매 틱(또는 캔들)마다 호출되어 상태를 업데이트합니다.
+        Called on each tick (or candle) to update state.
         
         Args:
-            price (float): 현재 가격
-            signal (int, optional): 전략 신호 (1: Long, -1: Short, 0: Neutral, None: 감시중)
-            current_atr (float): 현재 ATR 값 (SL 계산 및 전략 전달용)
+            price (float): Current price
+            signal (int, optional): Strategy signal (1: Long, -1: Short, 0: Neutral, None: Monitoring)
+            current_atr (float): Current ATR value (for SL calculation and strategy use)
+            timestamp (int, optional): Current tick timestamp (required for backtest)
             
         Returns:
-            list[str]: 발생한 이벤트 로그 메시지 리스트
+            list[str]: List of event log messages
         """
         logs = []
-        sl_ratio = self.config.get('sl_ratio', cfg.SL_RATIO)
         
-        # [ATR Dynamic SL Logic]
-        # 최적화된 'sl_multiplier'가 있으면 ATR 기반 SL 우선 적용
-        if self.config.get('USE_ATR_SL', False) and self.entry_atr > 0 and self.avg_entry > 0:
-            sl_mult = self.config.get('sl_multiplier', 0.0)
-            if sl_mult > 0:
-                # Dynamic SL Ratio = (EntryATR * Multiplier) / EntryPrice
-                sl_ratio = (self.entry_atr * sl_mult) / self.avg_entry
-        
-        # [Fix] 현재 포지션이 있으면 진입 시점의 레버리지 사용, 없으면 최신 설정 사용
-        if self.position != 0:
-            leverage = self.entry_leverage
-        else:
-            leverage = self.config.get('leverage', 1)
-        
-        # 1. PnL 계산 (포지션 있을 때만)
-        lev_pnl = 0.0
-        if self.position != 0:
-            if self.position == 1:
-                raw_pnl = (price - self.avg_entry) / self.avg_entry
-            else: # -1
-                raw_pnl = (self.avg_entry - price) / self.avg_entry
-            lev_pnl = raw_pnl * leverage
+        with self.lock:
+            sl_ratio = self.config.get('sl_ratio', cfg.SL_RATIO)
             
-        # 2. 리스크 관리 (손절 체크) - 전략과 무관하게 강제 수행
-        if self.position != 0:
-            if lev_pnl <= -sl_ratio:
-                logs.append(self.close_position(price, "손절", lev_pnl))
-                return logs # 손절되면 이번 틱 종료
+            # [ATR Dynamic SL Logic]
+            # Use ATR-based SL when optimized 'sl_multiplier' is available
+            if self.config.get('USE_ATR_SL', False) and self.entry_atr > 0 and self.avg_entry > 0:
+                sl_mult = self.config.get('sl_multiplier', 0.0)
+                if sl_mult > 0:
+                    # Dynamic SL Ratio = (EntryATR * Multiplier) / EntryPrice
+                    sl_ratio = (self.entry_atr * sl_mult) / self.avg_entry
+            
+            # [Fix] Use entry leverage if in position, otherwise use latest config
+            if self.position != 0:
+                leverage = self.entry_leverage
+            else:
+                leverage = self.config.get('leverage', 1)
+            
+            # 1. PnL calculation (only when in position)
+            lev_pnl = 0.0
+            if self.position != 0:
+                if self.position == 1:
+                    raw_pnl = (price - self.avg_entry) / self.avg_entry
+                else: # -1
+                    raw_pnl = (self.avg_entry - price) / self.avg_entry
+                lev_pnl = raw_pnl * leverage
                 
-        # 3. 전략 신호 처리 (위임)
-        if signal is not None:
-            # 전략 클래스에게 결정 위임 (ATR 전달)
-            strategy_logs = self.logic.process_signal(self, price, signal, current_atr)
-            logs.extend(strategy_logs)
+            # 2. Risk management (Stop Loss & Trailing Stop & Daily Loss)
+            
+            # [A] Daily Loss Check (Global)
+            # If timestamp is provided, we are likely in backtest -> Use it for date calc
+            self._check_daily_loss(price, timestamp)
+            if self.is_paused:
+                return logs # Trading paused, skip rest
+                
+            if self.position != 0:
+                # [B] Centralized Trailing Stop & Breakeven
+                # Only if strategy didn't signal exit yet (or we want to override)
+                rs_log = self._check_risk_management(price, current_atr)
+                if rs_log:
+                    logs.append(rs_log)
+                    return logs # Exit triggered
+            
+                # [C] Hard Stop Loss (Safety Net)
+                if lev_pnl <= -sl_ratio:
+                    logs.append(self.close_position(price, "stop_loss", lev_pnl))
+                    return logs
+
+                # [D] Take Profit & Partial Exit (matches C++ backtester)
+                tp_ratio = float(self.config.get('tp_ratio', getattr(cfg, 'TP_RATIO', 0.99)))
+                if lev_pnl >= tp_ratio:
+                    if not self.partial_done:
+                        # First TP hit → partial exit (50%), keep position open
+                        self.partial_done = True
+                        self.partial_pnl = lev_pnl
+                        self.record_partial_exit(price, lev_pnl)
+                        logs.append(
+                            f"🔶 Partial TP @ {price} "
+                            f"(PnL: {lev_pnl*100:.2f}% locked on 50%)"
+                        )
+                    else:
+                        # Already partial → full TP exit
+                        logs.append(self.close_position(price, "TakeProfit", lev_pnl))
+                        return logs
                     
-        # 4. MDD 업데이트
-        if self.balance > self.peak_balance:
-            self.peak_balance = self.balance
-        dd = (self.peak_balance - self.balance) / self.peak_balance
-        if dd > self.max_drawdown:
-            self.max_drawdown = dd
+            # 3. Strategy signal processing (delegated)
+            if signal is not None and self.position == 0: # Only entry if flat, or logic handles flip
+                # Strategy might call close_position / open_position internally?
+                # Ideally strategy returns actions, but current design calls state methods.
+                # Since we hold the lock, it's safe.
+                strategy_logs = self.logic.process_signal(self, price, signal, current_atr, extras=kwargs)
+                logs.extend(strategy_logs)
+            elif signal is not None and self.position != 0:
+                # Exit signal processing
+                strategy_logs = self.logic.process_signal(self, price, signal, current_atr, extras=kwargs)
+                logs.extend(strategy_logs)
+                        
+            # 4. MDD update
+            if self.balance > self.peak_balance:
+                self.peak_balance = self.balance
+            dd = (self.peak_balance - self.balance) / self.peak_balance
+            if dd > self.max_drawdown:
+                self.max_drawdown = dd
             
         return logs
+
+    def _check_daily_loss(self, current_price, timestamp=None):
+        """
+        [Risk] Check if daily loss limit is hit.
+        Resets daily_start_balance if day changed.
+        timestamp: Unix timestamp (int) or None. If None, uses system date.
+        """
+        import datetime
+        
+        if timestamp:
+            current_date = datetime.datetime.fromtimestamp(timestamp).date()
+            is_backtest = True
+        else:
+            current_date = datetime.date.today()
+            is_backtest = False
+        
+        # Day Change Reset
+        if self.last_trade_date != current_date:
+            self.last_trade_date = current_date
+            self.daily_start_balance = self.balance
+            # Auto-resume on new day?
+            # if self.is_paused: self.is_paused = False 
+            
+        # Calc Loss
+        if self.daily_start_balance > 0:
+            loss_pct = (self.daily_start_balance - self.balance) / self.daily_start_balance
+            limit = getattr(cfg, 'DAILY_LOSS_LIMIT', 0.05)
+            
+            if loss_pct >= limit and not self.is_paused:
+                self.is_paused = True
+                if not is_backtest:
+                    print(f"\n[RISK] [STOP] Daily Loss Limit Hit (-{loss_pct*100:.1f}%). Trading Paused.")
+                else:
+                    # In backtest, we might want to log it but not spam stderr
+                    # or just silently pause.
+                    pass
+
+    def _check_risk_management(self, price, atr):
+        """
+        [Risk] Centralized Trailing Stop & Breakeven Logic.
+        Returns log string if exit occurred, else None.
+        """
+        if self.position == 0: return None
+        
+        # Configs
+        use_ts = getattr(cfg, 'USE_TRAILING_STOP', False)
+        use_be = getattr(cfg, 'USE_BREAKEVEN', False)
+        
+        # PnL Calc
+        if self.position == 1:
+            raw_pnl = (price - self.avg_entry) / self.avg_entry
+        else:
+            raw_pnl = (self.avg_entry - price) / self.avg_entry
+            
+        # 1. Trailing Stop
+        if use_ts:
+            activation = getattr(cfg, 'TS_ACTIVATION', 0.02)
+            callback = getattr(cfg, 'TS_CALLBACK', 0.01)
+            
+            if raw_pnl >= activation:
+                # Set/Update High Watermark Price for TS
+                if self.trailing_stop_price == 0:
+                     # First activation
+                     if self.position == 1: self.trailing_stop_price = price * (1 - callback)
+                     else: self.trailing_stop_price = price * (1 + callback)
+                else:
+                    # Trailing Logic
+                    if self.position == 1:
+                        new_sl = price * (1 - callback)
+                        if new_sl > self.trailing_stop_price: self.trailing_stop_price = new_sl
+                    else:
+                        new_sl = price * (1 + callback)
+                        if new_sl < self.trailing_stop_price: self.trailing_stop_price = new_sl
+                        
+            # Check Exit
+            if self.trailing_stop_price > 0:
+                triggered = False
+                if self.position == 1 and price < self.trailing_stop_price: triggered = True
+                elif self.position == -1 and price > self.trailing_stop_price: triggered = True
+                
+                if triggered:
+                    lev_pnl = raw_pnl * self.entry_leverage
+                    return self.close_position(price, "TrailingStop", lev_pnl)
+
+        # 2. Breakeven
+        if use_be:
+            be_trigger = getattr(cfg, 'BE_TRIGGER', 0.015)
+            be_offset = getattr(cfg, 'BE_OFFSET', 0.002)
+            
+            if raw_pnl >= be_trigger:
+                # We don't have a specific 'BE' state, but we can use Trailing Stop price as BE floor
+                # If TS is not active or BE level is better than TS
+                be_price = 0
+                if self.position == 1: be_price = self.avg_entry * (1 + be_offset)
+                else: be_price = self.avg_entry * (1 - be_offset)
+                
+                # Update TS price to at least BE
+                if self.position == 1:
+                    if self.trailing_stop_price < be_price: self.trailing_stop_price = be_price
+                else:
+                     if self.trailing_stop_price == 0 or self.trailing_stop_price > be_price: 
+                        self.trailing_stop_price = be_price
+                        
+        return None
 
     def open_position(self, side, price, atr=0.0):
         self.position = side
@@ -142,12 +295,12 @@ class TradeStateManager:
         self.entry_atr = atr # [NEW]
         self.partial_done = False
         self.partial_pnl = 0.0
-        # [NEW] 진입 시점의 레버리지 및 타임프레임 저장
+        # [NEW] Save leverage and timeframe at entry
         self.entry_leverage = self.config.get('leverage', 1)
         self.entry_timeframe = self.config.get('timeframe', '5m')
         self.trades += 1 
         
-        # [Log] 진입 기록
+        # [Log] Record entry
         if self.logger:
             self.logger.log_trade(
                 event="ENTRY",
@@ -163,23 +316,24 @@ class TradeStateManager:
     def close_position(self, price, msg, current_lev_pnl):
         final_pnl = current_lev_pnl
         
-        # 부분 청산 합성 PnL 계산
+        # Composite PnL calculation for partial exits
         if self.partial_done:
             final_pnl = (self.partial_pnl * 0.5) + (current_lev_pnl * 0.5)
             msg += "/Composite"
             
-        # [Calc] 실현 손익금 계산 (수수료 제외 전 순수익)
+        # [Calc] Realized profit amount (before fees)
         realized_profit_amt = self.balance * final_pnl
         
         fee = getattr(cfg, 'FEE_RATE', 0.001)
-        self.balance *= (1 + final_pnl - fee) # 수수료 반영 후 잔고
+        leverage_fee = fee * self.entry_leverage  # Scale fee with leverage (matches C++ backtester)
+        self.balance *= (1 + final_pnl - leverage_fee) # Balance after fees
         
         realized_pnl = final_pnl
         if final_pnl > 0: self.wins += 1
         
         old_pos = "LONG" if self.position == 1 else "SHORT"
         
-        # [Log] 청산 기록
+        # [Log] Record exit
         if self.logger:
             self.logger.log_trade(
                 event=f"EXIT ({msg})",
@@ -192,22 +346,23 @@ class TradeStateManager:
                 config=self.config
             )
 
-        # 상태 리셋
+        # Reset state
         self.position = 0
         self.partial_done = False
         self.partial_pnl = 0.0
+        self.trailing_stop_price = 0.0 # [Fix] Reset TS
         
-        return f"청산 [{msg}]: {old_pos} @ {price} (ROI: {final_pnl*100:.2f}% | ${realized_profit_amt:+.2f}) -> Bal: {self.balance:.2f}"
+        return f"Close [{msg}]: {old_pos} @ {price} (ROI: {final_pnl*100:.2f}% | ${realized_profit_amt:+.2f}) -> Bal: {self.balance:.2f}"
 
     def manual_close_position(self, price, reason="Manual"):
         """
-        [NEW] 수동 청산 기능
+        [NEW] Manual close position
         """
         if self.position == 0:
             return None
             
         current_lev_pnl = 0.0
-        # PnL 계산 (현재가 기준)
+        # PnL calculation (at current price)
         if self.position == 1:
             lev_pnl = ((price - self.avg_entry) / self.avg_entry) * self.entry_leverage
         else:
@@ -217,7 +372,7 @@ class TradeStateManager:
         return msg
 
     def record_partial_exit(self, price, pnl_pct):
-        """Standard/Hybrid Strategy에서 부분 청산 시 호출"""
+        """Called on partial exit from Standard/Hybrid Strategy"""
         import time
         self.trade_history.append({
             'time': int(time.time()),
@@ -230,7 +385,7 @@ class TradeStateManager:
 
     def save_params(self, params):
         """
-        [WFA] 최적화된 파라미터를 JSON 파일로 저장합니다.
+        [WFA] Saves optimized parameters to a JSON file.
         """
         try:
             path = getattr(cfg, 'PARAMS_FILE_PATH', 'best_params.json')
@@ -242,7 +397,7 @@ class TradeStateManager:
 
     def load_params(self):
         """
-        [WFA] 저장된 파라미터가 있으면 로드하여 설정에 덮어씁니다.
+        [WFA] Loads saved parameters from file and applies them to config.
         """
         try:
             path = getattr(cfg, 'PARAMS_FILE_PATH', 'best_params.json')
@@ -250,11 +405,11 @@ class TradeStateManager:
                 with open(path, 'r') as f:
                     saved_params = json.load(f)
                     
-                # 기존 config 업데이트 (덮어쓰기)
+                # Update existing config (overwrite)
                 self.config.update(saved_params)
                 # print(f"📂 [System] Loaded best params from {path}") # [Silenced] User Request
                 
-                # 전략 로직 등 업데이트 필요 시 호출
+                # Re-run update_config if strategy logic needs refreshing
                 self.update_config(self.config)
         except Exception as e:
             print(f"⚠️ Failed to load params: {e}")

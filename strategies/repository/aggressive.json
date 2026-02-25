@@ -1,0 +1,196 @@
+{
+    "strategy_name": "Aggressive",
+    "version": "1.0",
+    "comment": "Trend-following strategy with RSI, WaveTrend, CCI, ADX, and Filter protections.",
+    "definitions": {
+        "indicators": [
+            {
+                "name": "rsi",
+                "type": "RSI",
+                "source": "close",
+                "length": "rsi_length"
+            },
+            {
+                "name": "wt_diff",
+                "type": "WaveTrend_Diff",
+                "source": "ohlc4",
+                "ch_len": "wt_channel_len",
+                "avg_len": "wt_avg_len"
+            },
+            {
+                "name": "cci",
+                "type": "CCI",
+                "source": "hlc3",
+                "length": "cci_length"
+            },
+            {
+                "name": "adx",
+                "type": "ADX",
+                "source": "high_low_close",
+                "length": "adx_length"
+            },
+            {
+                "name": "atr",
+                "type": "ATR",
+                "source": "high_low_close",
+                "length": 14
+            },
+            {
+                "name": "ema_filter",
+                "type": "EMA",
+                "source": "close",
+                "length": "ema_period"
+            },
+            {
+                "name": "chop",
+                "type": "Choppiness",
+                "source": "high_low_close",
+                "length": 14
+            },
+            {
+                "name": "kernel_ls",
+                "type": "Kernel_LS",
+                "source": "ohlc4",
+                "h": "kernel_weight",
+                "r": "kernel_lookback",
+                "mult": "kernel_lookback_mult"
+            }
+        ]
+    },
+    "entry_rules": {
+        "long": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "AI Prediction Bullish",
+                        "type": "knn_signal",
+                        "value": 1
+                    },
+                    {
+                        "desc": "Not Choppy",
+                        "type": "compare",
+                        "left": "chop",
+                        "op": "<",
+                        "right": "chop_threshold"
+                    },
+                    {
+                        "desc": "Trend Strength",
+                        "type": "condition",
+                        "if": "use_adx_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "adx",
+                                "op": ">",
+                                "right": "adx_threshold"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Trend Alignment",
+                        "type": "condition",
+                        "if": "use_ema_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "close",
+                                "op": ">",
+                                "right": "ema_filter"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Kernel Confirmation",
+                        "type": "compare",
+                        "left": "kernel_ls",
+                        "op": "==",
+                        "right": 1
+                    }
+                ]
+            }
+        ],
+        "short": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "AI Prediction Bearish",
+                        "type": "knn_signal",
+                        "value": -1
+                    },
+                    {
+                        "desc": "Not Choppy",
+                        "type": "compare",
+                        "left": "chop",
+                        "op": "<",
+                        "right": "chop_threshold"
+                    },
+                    {
+                        "desc": "Trend Strength",
+                        "type": "condition",
+                        "if": "use_adx_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "adx",
+                                "op": ">",
+                                "right": "adx_threshold"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Trend Alignment",
+                        "type": "condition",
+                        "if": "use_ema_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "close",
+                                "op": "<",
+                                "right": "ema_filter"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Kernel Confirmation",
+                        "type": "compare",
+                        "left": "kernel_ls",
+                        "op": "==",
+                        "right": -1
+                    }
+                ]
+            }
+        ]
+    },
+    "exit_rules": {
+        "long": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "RSI Overbought",
+                        "type": "compare",
+                        "left": "rsi",
+                        "op": ">",
+                        "right": 80
+                    }
+                ]
+            }
+        ],
+        "short": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "RSI Oversold",
+                        "type": "compare",
+                        "left": "rsi",
+                        "op": "<",
+                        "right": 20
+                    }
+                ]
+            }
+        ]
+    }
+}

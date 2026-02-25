@@ -1,0 +1,191 @@
+{
+    "strategy_name": "Regime Rider",
+    "version": "1.0",
+    "comment": "KNN Lorentzian + Multi-Layer Regime Detection. Trades ONLY in confirmed trends, sits out choppy/ranging markets. Core idea: KNN predicts direction, but we gate entries behind 4 uncorrelated regime filters — ADX trend strength, Choppiness index, dual-EMA trend alignment, and RSI momentum confirmation. Fewer trades, higher quality.",
+    "definitions": {
+        "indicators": [
+            {
+                "name": "rsi",
+                "type": "rsi",
+                "source": "close",
+                "length": "rsi_length",
+                "ml_feature": true
+            },
+            {
+                "name": "wt_diff",
+                "type": "wt",
+                "source": "hlc3",
+                "channel_length": "wt_channel_len",
+                "average_length": "wt_avg_len",
+                "ml_feature": true
+            },
+            {
+                "name": "cci",
+                "type": "cci",
+                "source": "hlc3",
+                "length": "cci_length",
+                "ml_feature": true
+            },
+            {
+                "name": "adx",
+                "type": "adx",
+                "source": "high_low_close",
+                "length": "adx_length",
+                "ml_feature": true
+            },
+            {
+                "name": "rsi2",
+                "type": "rsi",
+                "source": "close",
+                "length": "rsi2_length",
+                "ml_feature": true
+            },
+            {
+                "name": "atr",
+                "type": "atr",
+                "source": "high_low_close",
+                "length": 14
+            },
+            {
+                "name": "chop",
+                "type": "chop",
+                "source": "high_low_close",
+                "length": 14
+            },
+            {
+                "name": "kernel_ls",
+                "type": "kernel",
+                "source": "close",
+                "weight": "kernel_weight",
+                "lookback": "kernel_lookback",
+                "mult": "kernel_lookback_mult"
+            },
+            {
+                "name": "ema_fast",
+                "type": "ema",
+                "source": "close",
+                "length": "ema_fast_period"
+            },
+            {
+                "name": "ema_slow",
+                "type": "ema",
+                "source": "close",
+                "length": "ema_slow_period"
+            }
+        ]
+    },
+    "entry_rules": {
+        "long": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "AI Prediction Bullish",
+                        "type": "knn_signal",
+                        "value": 1
+                    },
+                    {
+                        "desc": "[Regime] Not Choppy — Choppiness Index below threshold",
+                        "type": "compare",
+                        "left": "chop",
+                        "op": "<",
+                        "right": "chop_threshold"
+                    },
+                    {
+                        "desc": "[Regime] Strong Trend — ADX above threshold (MANDATORY)",
+                        "type": "compare",
+                        "left": "adx",
+                        "op": ">",
+                        "right": "adx_threshold"
+                    },
+                    {
+                        "desc": "[Regime] Uptrend Confirmed — fast EMA above slow EMA",
+                        "type": "compare",
+                        "left": "ema_fast",
+                        "op": ">",
+                        "right": "ema_slow"
+                    },
+                    {
+                        "desc": "[Regime] Price Above Trend — close above slow EMA",
+                        "type": "compare",
+                        "left": "close",
+                        "op": ">",
+                        "right": "ema_slow"
+                    },
+                    {
+                        "desc": "[Momentum] RSI confirms bullish bias — above momentum gate",
+                        "type": "compare",
+                        "left": "rsi",
+                        "op": ">",
+                        "right": "rsi_momentum_gate"
+                    },
+                    {
+                        "desc": "[Direction] Kernel Regression rising",
+                        "type": "compare",
+                        "left": "kernel_ls",
+                        "op": "==",
+                        "right": 1
+                    }
+                ]
+            }
+        ],
+        "short": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "AI Prediction Bearish",
+                        "type": "knn_signal",
+                        "value": -1
+                    },
+                    {
+                        "desc": "[Regime] Not Choppy — Choppiness Index below threshold",
+                        "type": "compare",
+                        "left": "chop",
+                        "op": "<",
+                        "right": "chop_threshold"
+                    },
+                    {
+                        "desc": "[Regime] Strong Trend — ADX above threshold (MANDATORY)",
+                        "type": "compare",
+                        "left": "adx",
+                        "op": ">",
+                        "right": "adx_threshold"
+                    },
+                    {
+                        "desc": "[Regime] Downtrend Confirmed — fast EMA below slow EMA",
+                        "type": "compare",
+                        "left": "ema_fast",
+                        "op": "<",
+                        "right": "ema_slow"
+                    },
+                    {
+                        "desc": "[Regime] Price Below Trend — close below slow EMA",
+                        "type": "compare",
+                        "left": "close",
+                        "op": "<",
+                        "right": "ema_slow"
+                    },
+                    {
+                        "desc": "[Momentum] RSI confirms bearish bias — below counter gate",
+                        "type": "compare",
+                        "left": "rsi",
+                        "op": "<",
+                        "right": "rsi_counter_gate"
+                    },
+                    {
+                        "desc": "[Direction] Kernel Regression falling",
+                        "type": "compare",
+                        "left": "kernel_ls",
+                        "op": "==",
+                        "right": -1
+                    }
+                ]
+            }
+        ]
+    },
+    "exit_rules": {
+        "long": [],
+        "short": []
+    }
+}

@@ -11,14 +11,18 @@ struct BacktestResult {
     int wins;
     int trades;
     double mdd;
-    double sharpe; // [NEW] Sharpe Ratio
+    double sharpe;          // Legacy (kept for compatibility)
+    double total_return;    // Total percentage return
+    double sortino;         // Sortino Ratio (return / downside deviation)
+    double calmar;          // Calmar Ratio (return / max drawdown)
+    double profit_factor;   // Gross profit / Gross loss
 };
 
-// Python wrapper interface
 // Python wrapper interface
 py::dict fast_backtest_wrapper(
     py::array_t<double> prices, 
     py::array_t<int> signals, 
+    py::array_t<int> exit_signals, // Bitmask: 1=LongExit, 2=ShortExit
     py::array_t<double> atr,
     int leverage, 
     double start_balance, 
@@ -32,6 +36,7 @@ py::dict fast_backtest_wrapper(
 BacktestResult fast_backtest_internal(
     const std::vector<double>& prices, 
     const std::vector<int>& signals, 
+    const std::vector<int>& exit_signals, // Bitmask: 1=LongExit, 2=ShortExit
     const std::vector<double>& atr,
     int leverage, 
     double start_balance, 

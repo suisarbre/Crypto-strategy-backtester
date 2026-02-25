@@ -1,0 +1,207 @@
+{
+    "strategy_name": "Standard",
+    "version": "1.1",
+    "comment": "KNN Lorentzian Classification with Rational Quadratic Kernel confirmation. Based on jdehorty's original algorithm.",
+    "definitions": {
+        "indicators": [
+            {
+                "name": "rsi",
+                "type": "rsi",
+                "source": "close",
+                "length": "rsi_length",
+                "ml_feature": true
+            },
+            {
+                "name": "wt_diff",
+                "type": "wt",
+                "source": "hlc3",
+                "channel_length": "wt_channel_len",
+                "average_length": "wt_avg_len",
+                "ml_feature": true
+            },
+            {
+                "name": "cci",
+                "type": "cci",
+                "source": "hlc3",
+                "length": "cci_length",
+                "ml_feature": true
+            },
+            {
+                "name": "adx",
+                "type": "adx",
+                "source": "high_low_close",
+                "length": "adx_length",
+                "ml_feature": true
+            },
+            {
+                "name": "rsi2",
+                "type": "rsi",
+                "source": "close",
+                "length": "rsi2_length",
+                "ml_feature": true
+            },
+            {
+                "name": "atr",
+                "type": "atr",
+                "source": "high_low_close",
+                "length": 14
+            },
+            {
+                "name": "ema_filter",
+                "type": "ema",
+                "source": "close",
+                "length": "ema_period"
+            },
+            {
+                "name": "chop",
+                "type": "chop",
+                "source": "high_low_close",
+                "length": 14
+            },
+            {
+                "name": "kernel_ls",
+                "type": "kernel",
+                "source": "close",
+                "weight": "kernel_weight",
+                "lookback": "kernel_lookback",
+                "mult": "kernel_lookback_mult"
+            }
+        ]
+    },
+    "entry_rules": {
+        "long": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "AI Prediction Bullish",
+                        "type": "knn_signal",
+                        "value": 1
+                    },
+                    {
+                        "desc": "Not Choppy",
+                        "type": "compare",
+                        "left": "chop",
+                        "op": "<",
+                        "right": "chop_threshold"
+                    },
+                    {
+                        "desc": "Trend Strength",
+                        "type": "condition",
+                        "if": "use_adx_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "adx",
+                                "op": ">",
+                                "right": "adx_threshold"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Trend Alignment",
+                        "type": "condition",
+                        "if": "use_ema_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "close",
+                                "op": ">",
+                                "right": "ema_filter"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Kernel Confirmation",
+                        "type": "compare",
+                        "left": "kernel_ls",
+                        "op": "==",
+                        "right": 1
+                    }
+                ]
+            }
+        ],
+        "short": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "AI Prediction Bearish",
+                        "type": "knn_signal",
+                        "value": -1
+                    },
+                    {
+                        "desc": "Not Choppy",
+                        "type": "compare",
+                        "left": "chop",
+                        "op": "<",
+                        "right": "chop_threshold"
+                    },
+                    {
+                        "desc": "Trend Strength",
+                        "type": "condition",
+                        "if": "use_adx_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "adx",
+                                "op": ">",
+                                "right": "adx_threshold"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Trend Alignment",
+                        "type": "condition",
+                        "if": "use_ema_filter",
+                        "then": [
+                            {
+                                "type": "compare",
+                                "left": "close",
+                                "op": "<",
+                                "right": "ema_filter"
+                            }
+                        ]
+                    },
+                    {
+                        "desc": "Kernel Confirmation",
+                        "type": "compare",
+                        "left": "kernel_ls",
+                        "op": "==",
+                        "right": -1
+                    }
+                ]
+            }
+        ]
+    },
+    "exit_rules": {
+        "long": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "RSI Overbought",
+                        "type": "compare",
+                        "left": "rsi",
+                        "op": ">",
+                        "right": 80
+                    }
+                ]
+            }
+        ],
+        "short": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "RSI Oversold",
+                        "type": "compare",
+                        "left": "rsi",
+                        "op": "<",
+                        "right": 20
+                    }
+                ]
+            }
+        ]
+    }
+}

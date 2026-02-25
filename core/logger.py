@@ -16,10 +16,8 @@ class CsvLogger:
                 writer.writeheader()
 
     def log(self, data):
-        """
-        data (dict): 기록할 데이터 딕셔너리
-        """
-        # 타임스탬프 자동 추가
+        """Append a row to the CSV log file."""
+        # Auto-add timestamp
         if 'Timestamp' not in data:
             data['Timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
@@ -42,7 +40,7 @@ class TradeLogger(CsvLogger):
             'Symbol': symbol,
             'Side': side,
             'Price': price,
-            'Qty': 1, # 현물/선물 계약수 로직이 복잡하므로 일단 1로 고정하거나 추후 수정
+            'Qty': 1,  # Fixed for now (spot/futures qty logic TBD)
             'Realized_PnL': f"{pnl:.4f}",
             'Balance': f"{balance:.2f}",
             'Entry_Leverage': leverage,

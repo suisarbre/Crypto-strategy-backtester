@@ -3,9 +3,7 @@ import config as cfg
 from core.trade_state import TradeStateManager
 
 def run_deep_backtest(df, config):
-    """
-    TradeStateManager를 사용한 백테스팅 함수 (C++ 가속 지원)
-    """
+    """Backtesting function using TradeStateManager (with C++ acceleration support)."""
     # [C++ Integration]
     try:
         import cpp_engine
@@ -28,7 +26,13 @@ def run_deep_backtest(df, config):
         start_bal = float(getattr(cfg, 'START_BALANCE', 100.0))
         fee_rate = float(getattr(cfg, 'FEE_RATE', 0.001))
         
-        res = cpp_engine.fast_backtest(prices, signals, atr_vec, leverage, start_bal, sl_ratio, sl_mult, tp_ratio, fee_rate)
+        # Extract exit signals (or default to 0 if not present)
+        if 'exit_signal' in df.columns:
+            exit_signals = df['exit_signal'].values.astype(np.int32)
+        else:
+            exit_signals = np.zeros(len(df), dtype=np.int32)
+        
+        res = cpp_engine.fast_backtest(prices, signals, exit_signals, atr_vec, leverage, start_bal, sl_ratio, sl_mult, tp_ratio, fee_rate)
         
         return res['balance'], res['wins'], res['trades'], res['mdd'], res['balance']
     else:
@@ -36,13 +40,59 @@ def run_deep_backtest(df, config):
         state = TradeStateManager(config)
         test_df = df.reset_index(drop=True)
         
-        # 데이터프레임 순회
+        # Iterate over dataframe
         for i in range(len(test_df) - 1):
             price = test_df['close'].iloc[i]
             signal = test_df['final_signal'].iloc[i]
             state.process_tick(price, signal)
 
         return state.balance, state.wins, state.trades, state.max_drawdown, state.balance
+
+def generate_signal_markers(df, warmup=50):
+    """
+    Creates markers only where final_signal CHANGES state
+    (e.g. 0→1, 1→-1, -1→0, 0→-1, etc.).
+    This avoids flooding the chart with a marker on every bar.
+
+    Returns: list of marker dicts for Lightweight Charts.
+    """
+    markers = []
+    test_df = df.reset_index(drop=True)
+    prev_sig = 0
+
+    for i in range(warmup, len(test_df)):
+        row = test_df.iloc[i]
+        sig = int(row.get('final_signal', 0))
+
+        # Only emit a marker when the signal changes
+        if sig == prev_sig:
+            prev_sig = sig
+            continue
+
+        ts = int(row['timestamp'].timestamp())
+
+        if sig == 1:
+            markers.append({
+                'time': ts,
+                'position': 'belowBar',
+                'color': 'rgba(16,185,129,0.55)',
+                'shape': 'arrowUp',
+                'text': 'Buy',
+            })
+        elif sig == -1:
+            markers.append({
+                'time': ts,
+                'position': 'aboveBar',
+                'color': 'rgba(239,68,68,0.55)',
+                'shape': 'arrowDown',
+                'text': 'Sell',
+            })
+        # sig == 0 means signal turned off — no marker needed
+
+        prev_sig = sig
+
+    return markers
+
 
 def run_backtest_with_markers(df, config, warmup=10):
     """
@@ -74,14 +124,16 @@ def run_backtest_with_markers(df, config, warmup=10):
         # Pass extras for Hybrid/Trend strategy
         current_atr = row['atr'] if 'atr' in row else 0.0
         st_trend = row['supertrend_trend'] if 'supertrend_trend' in row else 0
-        extras = {'supertrend_trend': st_trend}
+        exit_sig = row['exit_signal'] if 'exit_signal' in row else 0
+        extras = {'supertrend_trend': st_trend, 'exit_signal': exit_sig}
         
         # [Capture State Before]
         prev_pos = state.position
         prev_entry = state.avg_entry # Capture for PnL calc
         
         # Execute Logic
-        logs = state.process_tick(price, signal=signal, current_atr=current_atr, extras=extras)
+        # [Fix] Pass timestamp to allow correct Daily Loss Logic (or to skip it)
+        logs = state.process_tick(price, signal=signal, current_atr=current_atr, timestamp=ts, extras=extras)
         
         # [Capture State After]
         curr_pos = state.position
@@ -122,7 +174,7 @@ def run_backtest_with_markers(df, config, warmup=10):
                 
             # Check logs for specific keywords
             for log in logs:
-                if '손절' in log: reason = 'SL'
+                if 'stop_loss' in log: reason = 'SL'
                 
                 # Trailing Stop (Standard)
                 if 'TrailingStop' in log or 'TS' in log: 

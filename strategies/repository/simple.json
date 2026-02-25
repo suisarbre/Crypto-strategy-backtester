@@ -1,0 +1,97 @@
+{
+    "strategy_name": "Robust_Trend_Guard",
+    "version": "1.0",
+    "comment": "Classic Triple EMA Trend Following with ATR Volatility Exit.",
+    "definitions": {
+        "indicators": [
+            {
+                "name": "ema_fast",
+                "type": "ema",
+                "source": "close",
+                "length": 20
+            },
+            {
+                "name": "ema_med",
+                "type": "ema",
+                "source": "close",
+                "length": 50
+            },
+            {
+                "name": "ema_slow",
+                "type": "ema",
+                "source": "close",
+                "length": 200
+            },
+            {
+                "name": "atr",
+                "type": "atr",
+                "source": "high_low_close",
+                "length": 14
+            }
+        ]
+    },
+    "entry_rules": {
+        "long": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "Major Trend Filter",
+                        "type": "compare",
+                        "left": "close",
+                        "op": ">",
+                        "right": "ema_slow"
+                    },
+                    {
+                        "desc": "Momentum Cross",
+                        "type": "compare",
+                        "left": "ema_fast",
+                        "op": ">",
+                        "right": "ema_med"
+                    }
+                ]
+            }
+        ],
+        "short": [
+            {
+                "op": "and",
+                "rules": [
+                    {
+                        "desc": "Major Trend Filter",
+                        "type": "compare",
+                        "left": "close",
+                        "op": "<",
+                        "right": "ema_slow"
+                    },
+                    {
+                        "desc": "Momentum Cross",
+                        "type": "compare",
+                        "left": "ema_fast",
+                        "op": "<",
+                        "right": "ema_med"
+                    }
+                ]
+            }
+        ]
+    },
+    "exit_rules": {
+        "long": [
+            {
+                "desc": "Trend Reversal",
+                "type": "compare",
+                "left": "ema_fast",
+                "op": "<",
+                "right": "ema_med"
+            }
+        ],
+        "short": [
+            {
+                "desc": "Trend Reversal",
+                "type": "compare",
+                "left": "ema_fast",
+                "op": ">",
+                "right": "ema_med"
+            }
+        ]
+    }
+}
