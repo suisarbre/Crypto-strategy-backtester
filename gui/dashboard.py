@@ -34,6 +34,23 @@ STATIC_DIR = os.path.join(BASE_DIR, 'static')
 app.add_static_files('/static', STATIC_DIR)
 
 
+def _report(context, exc):
+    """
+    Surface a caught exception on the *real* stderr.
+
+    Deliberately bypasses sys.stderr: TradingDashboard replaces it with a
+    StreamRedirector that forwards into a client-bound log element, so an error
+    raised while updating the UI would otherwise be swallowed by the very
+    machinery that just failed. Never raises — this is the reporter of last
+    resort.
+    """
+    try:
+        sys.__stderr__.write(f'[Dashboard] {context}: {type(exc).__name__}: {exc}\n')
+        sys.__stderr__.flush()
+    except Exception:
+        pass
+
+
 # ==============================================================================
 # 2.  Main Dashboard Class
 # ==============================================================================
@@ -80,8 +97,11 @@ class TradingDashboard:
             try:
                 if hasattr(self, 'log_container') and self.log_container:
                     self.log_container.push(msg.strip())
-            except Exception:
-                pass
+            except Exception as e:
+                # Reached from PaperTrader worker threads via the stdout hijack,
+                # i.e. with no client context. Reported, not raised: this runs
+                # inside a write() and must never break the caller's print().
+                _report('_handle_stream_message: log push failed', e)
 
     # ──────────────────────────────────────────────────────────────────────────
     #  Lifecycle
@@ -479,7 +499,11 @@ class TradingDashboard:
         try:
             with open(strat_path, 'r') as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as e:
+            # Silently returning [] here renders an empty optimize panel with no
+            # explanation — a malformed strategy JSON looked like a broken UI.
+            _report(f'_extract_tunable_params: cannot read {strat_path}', e)
+            self.log(f'⚠️ Could not read strategy file: {os.path.basename(str(strat_path))}')
             return []
 
         params = []
@@ -1301,7 +1325,11 @@ class TradingDashboard:
         try:
             with open(path, 'r') as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as e:
+            # Returning silently meant "Apply optimized params" reported success
+            # while writing nothing at all.
+            _report(f'_update_strategy_json: cannot read {path}', e)
+            self.log(f'❌ Could not apply params — unreadable strategy file: {path}')
             return
 
         # Update indicator params (string-referenced lengths)
@@ -1350,8 +1378,8 @@ class TradingDashboard:
         if hasattr(self, 'update_timer') and self.update_timer:
             try:
                 self.update_timer.cancel()
-            except Exception:
-                pass
+            except Exception as e:
+                _report('run_backtest_simulation: could not cancel chart timer', e)
             self.update_timer = None
 
         try:
@@ -1534,6 +1562,9 @@ class TradingDashboard:
                     try:
                         self.chart.update_candle(candle)
                     except RuntimeError:
+                        # Expected: client disconnected. This fires on every
+                        # poll until the loop is torn down, so it stays silent
+                        # by design rather than by omission.
                         pass
 
                 self.update_price_label(last_row['close'])
@@ -1549,8 +1580,15 @@ class TradingDashboard:
                     try:
                         with open(_strat_path, 'r') as f:
                             _strat_json = f.read()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # Correctness bug when silent: _strat_json stays None, so
+                        # generate_signals() falls back to the DEFAULT strategy's
+                        # rules and the chart draws markers for a strategy the
+                        # user did not select.
+                        _report(f'update_chart_loop: cannot read {_strat_path} — '
+                                f'markers will use default strategy rules', e)
+                        self.log('⚠️ Chart markers using default rules — '
+                                 'active strategy file unreadable')
 
                 def _calc_logic(df, cfg_):
                     from core.backtester import run_backtest_with_markers
@@ -1581,6 +1619,7 @@ class TradingDashboard:
                         try:
                             self.chart.set_markers(self.chart_markers)
                         except RuntimeError:
+                            # Expected: client disconnected — see above.
                             pass
 
         except Exception as e:
@@ -1603,8 +1642,11 @@ class TradingDashboard:
             try:
                 existing_df = pd.read_csv(file_path)
                 existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
-            except Exception:
-                pass
+            except Exception as e:
+                # Recoverable (we refetch), but silently losing the cache means
+                # every load refetches thousands of bars — a slow dashboard with
+                # no visible cause.
+                _report(f'fetch_and_cache_data: unreadable cache {file_path}', e)
 
         if existing_df.empty:
             new_df = fetch_raw_data(symbol, timeframe, limit)
@@ -1625,8 +1667,8 @@ class TradingDashboard:
 
         try:
             final_df.to_csv(file_path, index=False)
-        except Exception:
-            pass
+        except Exception as e:
+            _report(f'fetch_and_cache_data: cannot write cache {file_path}', e)
 
         return final_df
 
@@ -1637,8 +1679,8 @@ class TradingDashboard:
         try:
             if hasattr(self, 'log_container') and self.log_container:
                 self.log_container.push(formatted)
-        except Exception:
-            pass
+        except Exception as e:
+            _report('log: push to log_container failed', e)
         # Also write to real stdout for terminal visibility
         try:
             if hasattr(self, 'original_stdout'):
@@ -1648,6 +1690,8 @@ class TradingDashboard:
                 sys.__stdout__.write(formatted + '\n')
                 sys.__stdout__.flush()
         except Exception:
+            # Reporter of last resort: stdout itself is gone. Reporting here
+            # would recurse into the same failure. Stay silent deliberately.
             pass
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1681,7 +1725,10 @@ class TradingDashboard:
                 data.get('version', '?'),
                 data.get('comment', ''),
             )
-        except Exception:
+        except Exception as e:
+            # This is where a stray "Active: Unknown v?" in the sidebar comes
+            # from — previously with no indication of why.
+            _report(f'_get_strategy_info: cannot read {path}', e)
             return ('Unknown', '?', '')
 
     async def _apply_strategy(self):
