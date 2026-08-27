@@ -308,18 +308,38 @@ class TradingDashboard:
                 leverage, start_bal, sl_ratio, sl_mult, tp_ratio, fee_rate,
             )
         except ImportError:
-            return None, None
+            # Fall back to the Python backtester rather than returning nothing.
+            # Requiring the C++ build here left the benchmark drawer permanently
+            # empty for anyone who had not run `setup.py build_ext`, which read
+            # as "the benchmark button does not work".
+            from core.backtester import run_deep_backtest
+            balance, wins, trades, mdd, _ = run_deep_backtest(df, config)
+            res = {
+                'balance': balance,
+                'wins': wins,
+                'trades': trades,
+                'mdd': mdd,
+                'total_return': (balance - start_bal) / start_bal if start_bal else 0.0,
+                # Risk-adjusted ratios come from the C++ engine only.
+                'sortino': None,
+                'calmar': None,
+                'profit_factor': None,
+            }
+
+        def _pct(v):
+            return v * 100 if v is not None else None
 
         strategy = {
-            'total_return': res.get('total_return', 0.0) * 100,  # → percent
+            'total_return': _pct(res.get('total_return', 0.0)),
             'sortino':       res.get('sortino', 0.0),
             'calmar':        res.get('calmar', 0.0),
             'profit_factor': res.get('profit_factor', 0.0),
-            'mdd':           res.get('mdd', 0.0) * 100,          # → percent
+            'mdd':           _pct(res.get('mdd', 0.0)),
             'trades':        res.get('trades', 0),
             'wins':          res.get('wins', 0),
             'win_rate':      (res['wins'] / res['trades'] * 100) if res.get('trades', 0) > 0 else 0.0,
             'balance':       res.get('balance', start_bal),
+            'engine':        'cpp' if res.get('sortino') is not None else 'python',
         }
 
         # Buy-and-Hold baseline
@@ -381,14 +401,23 @@ class TradingDashboard:
             # ── Section: Strategy Performance ──
             ui.label('STRATEGY PERFORMANCE').classes('bench-header')
 
+            # Ratios are C++-engine only; show why they're absent rather than
+            # rendering a misleading 0.000.
+            cpp_only = strategy.get('engine') != 'cpp'
+
+            def _ratio(value, fmt):
+                return 'n/a' if value is None else format(value, fmt)
+
+            ratio_sub = 'needs C++ engine' if cpp_only else None
+
             self._bench_row('Total Return', f'{strategy["total_return"]:+.2f}%',
                             color='#10b981' if strategy['total_return'] >= 0 else '#ef4444')
-            self._bench_row('Sortino Ratio', f'{strategy["sortino"]:.3f}',
-                            sub='risk-adjusted return', color='#3b82f6')
-            self._bench_row('Calmar Ratio', f'{strategy["calmar"]:.3f}',
-                            sub='return / max DD', color='#8b5cf6')
-            self._bench_row('Profit Factor', f'{strategy["profit_factor"]:.2f}',
-                            sub='gross P / gross L', color='#f59e0b')
+            self._bench_row('Sortino Ratio', _ratio(strategy['sortino'], '.3f'),
+                            sub=ratio_sub or 'risk-adjusted return', color='#3b82f6')
+            self._bench_row('Calmar Ratio', _ratio(strategy['calmar'], '.3f'),
+                            sub=ratio_sub or 'return / max DD', color='#8b5cf6')
+            self._bench_row('Profit Factor', _ratio(strategy['profit_factor'], '.2f'),
+                            sub=ratio_sub or 'gross P / gross L', color='#f59e0b')
             self._bench_row('Max Drawdown', f'{strategy["mdd"]:.2f}%',
                             color='#ef4444')
             self._bench_row('Win Rate', f'{strategy["win_rate"]:.1f}%',
@@ -1312,10 +1341,16 @@ class TradingDashboard:
             ui.notify(f'✅ Saved as "{new_name}"', type='positive', position='bottom-right')
             self.log(f'✅ New strategy saved: {new_path}')
 
-            # Refresh strategy list in sidebar
+            # Refresh strategy list in sidebar.
+            # Must stay a {key: label} dict to match how the selector is built —
+            # assigning a bare key list here replaced the display names with raw
+            # filename stems, and ChoiceElement._update_options() nulls the
+            # current value whenever it is missing from the rebuilt key list.
             self.available_strategies = self._discover_strategies()
-            self.strategy_select.options = list(self.available_strategies.keys())
-            self.strategy_select.update()
+            self.strategy_select.set_options(
+                self._strategy_options(),
+                value=self.active_strategy_name,
+            )
 
         # Refresh chart
         if self._optim_dialog:
@@ -1374,7 +1409,11 @@ class TradingDashboard:
         # ── Guard: prevent concurrent / re-entrant runs ──
         if getattr(self, '_backtest_running', False):
             self._backtest_pending = True          # single dedup'd retry
-            return
+            # A full load takes ~20s, so this window is wide: clicking
+            # "Apply & Preview" during one silently left the previous strategy's
+            # chart on screen, which read as the swap being ignored.
+            self.log('⏳ A load is already running — queued; chart will refresh when it finishes')
+            return False
         self._backtest_running = True
         self._backtest_pending = False
         self._backtest_start_time = time.time()
@@ -1510,13 +1549,15 @@ class TradingDashboard:
                 )
                 if strat_m and base_m:
                     self._populate_benchmarks(strat_m, base_m)  # UI update — must run on main loop
+                    sortino = strat_m['sortino']
+                    sortino_txt = f'{sortino:.2f}' if sortino is not None else 'n/a (no C++ engine)'
                     self.log(
                         f'📊 Benchmarks: Return {strat_m["total_return"]:+.2f}% '
                         f'| α {strat_m["total_return"] - base_m["buy_hold_return"]:+.2f}% '
-                        f'| Sortino {strat_m["sortino"]:.2f}'
+                        f'| Sortino {sortino_txt}'
                     )
                 else:
-                    self.log('⚠️ Benchmark computation returned no data (cpp_engine not available?)')
+                    self.log('⚠️ Benchmark computation returned no data')
             except Exception as e:
                 self.log(f'⚠️ Benchmark computation skipped: {e}')
 
@@ -1769,7 +1810,14 @@ class TradingDashboard:
                 self.bot.state.update_config(self.bot.state.config)
             self.log(f'Bot strategy updated to: {name}')
 
-        await self.run_backtest_simulation()
+        ran = await self.run_backtest_simulation()
+
+        if ran is False:
+            # The backtest was deferred, so chart_markers still belong to the
+            # PREVIOUS strategy. Showing their counts here labelled them as the
+            # newly selected strategy's results.
+            self.strat_stats_label.text = 'Stats: pending…'
+            return
 
         if hasattr(self, 'chart_markers') and self.chart_markers:
             # Signal markers have 'Buy'/'Sell' text; trade markers have LONG/SHORT/TP/SL etc.
