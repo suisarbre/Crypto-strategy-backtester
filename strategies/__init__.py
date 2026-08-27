@@ -1,58 +1,111 @@
+import glob
 import json
 import os
 import config as cfg
 from .json_strategy import JsonStrategyLogic
 from .lorentzian import LorentzianStrategy
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REPOSITORY_DIR = os.path.join(_HERE, 'repository')
+DEFAULT_STRATEGY_PATH = os.path.join(_HERE, 'strategies.json')
+
+# Python-implemented strategies only. JSON-backed strategies are discovered from
+# the repository and resolve to JsonStrategyLogic automatically — adding a new
+# .json file must never require an edit here (ADR-001).
 STRATEGY_MAP = {
-    'standard': JsonStrategyLogic,
-    'aggressive': JsonStrategyLogic,
     'lorentzian': LorentzianStrategy,
-    'default': LorentzianStrategy
 }
 
-def get_config_from_json():
-    """Load default strategy parameters from strategies.json"""
-    try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        json_path = os.path.join(current_dir, 'strategies.json')
-        if os.path.exists(json_path):
-            with open(json_path, 'r') as f:
-                data = json.load(f)
-                # Flatten or use definitions? 
-                # For now, return the whole dict as config.
-                # Strategies like Lorentzian expect keys at root or similar.
-                # But strategies.json has 'definitions', 'entry_rules'.
-                # We might need to flatten definitions->indicators parameters?
-                # Actually, LorentzianStrategy does self.config.get('rsi_length').
-                # strategies.json definitions use "length": "rsi_length".
-                # But where are the VALUES?
-                # AHH, the values are NOT in strategies.json? 
-                # strategies.json defines the *structure* or *schema*.
-                # The values usually come from user config or defaults.
-                # LorentzianStrategy.py has defaults: get('rsi_length', 14).
-                
-                # So passing an empty dict is better than crashing, 
-                # but passing system config is best.
-                return data
-    except Exception as e:
-        print(f"[Warning] Failed to load strategies.json: {e}")
-    return {}
 
-def get_strategy(name):
+class UnknownStrategyError(KeyError):
+    """Raised when a strategy key matches neither a Python strategy nor a JSON file."""
+
+
+def discover_strategies():
     """
-    Returns an instantiated strategy class with configuration.
+    Map strategy key -> JSON path.
+
+    Keys are filename stems: repository/regime_rider.json -> 'regime_rider'.
+    The 'strategy_name' field inside the JSON is display text only and is never
+    used as a lookup key (ADR-001) — it used to be, which left two of the four
+    shipped strategies unreachable.
     """
-    # 1. Resolve Class
-    logic_cls = STRATEGY_MAP.get(name.lower(), STRATEGY_MAP['default'])
-    
-    # 2. Build Config
-    # Start with System Config (module attributes to dict)
+    found = {}
+    if os.path.isdir(REPOSITORY_DIR):
+        for path in sorted(glob.glob(os.path.join(REPOSITORY_DIR, '*.json'))):
+            key = os.path.splitext(os.path.basename(path))[0].lower()
+            found[key] = path
+
+    # strategies.json is the fallback 'standard' when the repository lacks one.
+    if 'standard' not in found and os.path.exists(DEFAULT_STRATEGY_PATH):
+        found['standard'] = DEFAULT_STRATEGY_PATH
+
+    return found
+
+
+def strategy_path(name):
+    """JSON path for a strategy key, or None for Python-implemented strategies."""
+    return discover_strategies().get(str(name).lower())
+
+
+def display_name(name):
+    """Human-readable label for a strategy key (the JSON's 'strategy_name')."""
+    path = strategy_path(name)
+    if not path:
+        return str(name)
+    try:
+        with open(path, 'r') as f:
+            return json.load(f).get('strategy_name', name)
+    except Exception:
+        return str(name)
+
+
+def resolve_strategy_class(name):
+    """
+    Class backing a strategy key.
+
+    Raises UnknownStrategyError rather than falling back — a silent fallback
+    previously ran trades under a different strategy than the one selected.
+    """
+    key = str(name).lower()
+
+    if key in STRATEGY_MAP:
+        return STRATEGY_MAP[key]
+    if key in discover_strategies():
+        return JsonStrategyLogic
+
+    known = sorted(set(STRATEGY_MAP) | set(discover_strategies()))
+    raise UnknownStrategyError(
+        f"Unknown strategy '{name}'. Known strategies: {', '.join(known)}"
+    )
+
+
+def build_strategy_config(name, base=None):
+    """
+    Config dict for a strategy: system config, then the strategy's own JSON.
+
+    Also stashes the raw JSON under 'strategy_json' so JsonStrategyLogic can
+    evaluate its rules without the dashboard having to inject it separately.
+    """
     config = {k: v for k, v in cfg.__dict__.items() if not k.startswith('__')}
-    
-    # Merge with Strategy JSON (optional, but good for metadata)
-    json_config = get_config_from_json()
-    config.update(json_config)
-    
-    # 3. Instantiate with Config
-    return logic_cls(config)
+    if base:
+        config.update(base)
+
+    path = strategy_path(name)
+    if path:
+        try:
+            with open(path, 'r') as f:
+                raw = f.read()
+            config.update(json.loads(raw))
+            config['strategy_json'] = raw
+        except Exception as e:
+            print(f"[Warning] Failed to load strategy JSON for '{name}': {e}")
+
+    config['active_strategy'] = str(name).lower()
+    return config
+
+
+def get_strategy(name, base_config=None):
+    """Instantiate the strategy registered under `name`."""
+    logic_cls = resolve_strategy_class(name)
+    return logic_cls(build_strategy_config(name, base_config))

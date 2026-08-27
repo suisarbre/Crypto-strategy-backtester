@@ -5,6 +5,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.trader import TradingEngine
+import strategies
 import config as cfg
 
 def run_smoke_test():
@@ -18,11 +19,10 @@ def run_smoke_test():
         print(f"[FAIL] Failed to init engine: {e}")
         return
 
-    # 2. Check Active Strategy
-    print(f"[INFO] Active Strategy: {engine.active_strategy.__class__.__name__}")
-    if engine.active_strategy.__class__.__name__ != 'LorentzianStrategy':
-        print("[FAIL] Error: Expected LorentzianStrategy")
-        return
+    # 2. Resolve the strategy the engine will run with.
+    # The engine holds no strategy of its own — it is passed in per call.
+    strategy = strategies.get_strategy(cfg.ACTIVE_STRATEGY)
+    print(f"[INFO] Active Strategy: {strategy.__class__.__name__}")
 
     # 3. Analyze Market (Dry Run)
     print("[INFO] Running analyze_market()...")
@@ -30,11 +30,11 @@ def run_smoke_test():
         # Mock config
         conf = cfg.CURRENT_CONFIG
         timeframe = '15m' # Use a standard timeframe
-        
-        # We need to make sure we can fetch data. 
-        # If fetch_raw_data fails (network), we might want to mock it, 
+
+        # We need to make sure we can fetch data.
+        # If fetch_raw_data fails (network), we might want to mock it,
         # but for a smoke test, real connectivity check is also good.
-        result = engine.analyze_market(conf, timeframe)
+        result = engine.analyze_market(conf, timeframe, strategy)
         if result is None:
              print("[FAIL] analyze_market returned None (Data fetch failed?)")
              return

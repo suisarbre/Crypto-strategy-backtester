@@ -7,32 +7,23 @@ import config as cfg
 
 from core.trade_state import TradeStateManager
 from core.logger import TradeLogger, OptimizationLogger
-from strategies.lorentzian import LorentzianStrategy
-from strategies.json_strategy import JsonStrategyLogic
 
 class TradingEngine:
     """
     [Refactor] Encapsulates the core trading loop logic:
     - Data Fetching
-    - Delegating analysis to Active Strategy
+    - Delegating analysis to the caller's strategy
+
+    Deliberately stateless: the engine holds NO strategy of its own. It used to,
+    and because TradeStateManager holds one too, a strategy swap updated only the
+    execution half while signal generation kept running the engine's original
+    LorentzianStrategy. The strategy is now passed in per call so there is exactly
+    one instance in play — TradeStateManager.logic. Do not add one back here.
     """
-    def __init__(self):
-        # Default Strategy: Lorentzian
-        # In future, this could be passed in or loaded via config manager
-        # For now, we initialize with a default config
-        default_conf = cfg.CURRENT_CONFIG
-        self.active_strategy = LorentzianStrategy(default_conf)
 
-    def set_strategy(self, strategy_instance):
+    def analyze_market(self, config, timeframe, strategy):
         """
-        Hot-Swap the active strategy
-        """
-        print(f"🔄 Switching Strategy to: {strategy_instance.__class__.__name__}")
-        self.active_strategy = strategy_instance
-
-    def analyze_market(self, config, timeframe):
-        """
-        Fetches data, delegates to active_strategy for indicators/signals.
+        Fetches data, delegates to `strategy` for indicators/signals.
         Returns: (signal, price, atr, extras) or None if error/no data
         """
         # 1. Fetch Data
@@ -41,16 +32,13 @@ class TradingEngine:
 
         if len(df) > config.get('max_bars_back', 2000):
             df = df.tail(config.get('max_bars_back', 2000)).copy().reset_index(drop=True)
-            
-        # 2. Update Strategy Config (if dynamic)
-        # self.active_strategy.config = config # Optional: Update config on fly?
 
-        # 3. Calculate Indicators (Strategy Delegate)
-        df = self.active_strategy.calculate_indicators(df)
-        
-        # 4. Generate Signals (Strategy Delegate)
-        df = self.active_strategy.generate_signals(df)
-        
+        # 2. Calculate Indicators (Strategy Delegate)
+        df = strategy.calculate_indicators(df)
+
+        # 3. Generate Signals (Strategy Delegate)
+        df = strategy.generate_signals(df)
+
         # 5. Extract Results
         if 'final_signal' not in df.columns:
             sig = 0
@@ -247,8 +235,9 @@ class PaperTrader:
         # [Multi-Timeframe] Fetch data using currently active timeframe
         active_tf = self.state.get_active_timeframe()
         
-        # [Refactor] Delegate logic to TradingEngine
-        result = self.engine.analyze_market(self.state.config, active_tf)
+        # [Refactor] Delegate logic to TradingEngine.
+        # state.logic is the single active strategy — see TradingEngine docstring.
+        result = self.engine.analyze_market(self.state.config, active_tf, self.state.logic)
         if result is None: return
         
         sig, price, atr, extras = result

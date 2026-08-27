@@ -6,6 +6,22 @@ import core.trader as trader
 from core.trade_state import TradeStateManager
 from core.trader import TradingEngine
 
+class _StubStrategy:
+    """Minimal strategy stub: returns a prepared DataFrame from generate_signals."""
+
+    def __init__(self, df_out):
+        self.df_out = df_out
+        self.calls = []
+
+    def calculate_indicators(self, df):
+        self.calls.append('calculate_indicators')
+        return df
+
+    def generate_signals(self, df):
+        self.calls.append('generate_signals')
+        return self.df_out
+
+
 class TestFullFlow(unittest.TestCase):
     def setUp(self):
         # Setup mocks for external dependencies
@@ -48,17 +64,16 @@ class TestFullFlow(unittest.TestCase):
         mock_fetch.return_value = df_mock
         
         # Act
-        # We need to disable C++ engine in signals to ensure it runs in Python for this test?
-        # Or patch generate_signals to just return a signal
-        with patch('core.trader.generate_signals') as mock_gen_sig:
-            # Mock generate_signals returning DF with signal 1
-            df_sig = df_mock.copy()
-            df_sig['final_signal'] = 1 # Buy Signal
-            df_sig['atr'] = 1.0
-            mock_gen_sig.return_value = df_sig
-            
-            sig, price, atr, extras = engine.analyze_market(self.config, '5m')
-            
+        # The engine delegates indicators/signals to whatever strategy is passed
+        # in, so a stub strategy is all that's needed to drive it.
+        df_sig = df_mock.copy()
+        df_sig['final_signal'] = 1 # Buy Signal
+        df_sig['atr'] = 1.0
+
+        sig, price, atr, extras = engine.analyze_market(
+            self.config, '5m', _StubStrategy(df_sig)
+        )
+
         # Assert
         self.assertEqual(sig, 1)
         self.assertEqual(price, 110.0)
@@ -81,24 +96,24 @@ class TestFullFlow(unittest.TestCase):
             'open': [100]*50, 'high': [105]*50, 'low': [95]*50, 'close': [100]*50, 'volume': [1000]*50
         })
         mock_fetch.return_value = df_mock
-        
-        with patch('core.trader.generate_signals') as mock_gen_sig:
-            # Scenario: Buy Signal
-            df_sig = df_mock.copy()
-            df_sig['final_signal'] = 1
-            df_sig['atr'] = 2.0
-            mock_gen_sig.return_value = df_sig
-            
-            # 2. Engine Run
-            sig, price, atr, extras = engine.analyze_market(self.config, '5m')
-            
-            # 3. State Process
-            state.process_tick(price, signal=sig, current_atr=atr, **extras)
-            
-            # Verify Position Opened
-            self.assertEqual(state.position, 1)
-            self.assertEqual(state.avg_entry, 100.0)
-            self.assertEqual(state.entry_atr, 2.0)
+
+        # Scenario: Buy Signal
+        df_sig = df_mock.copy()
+        df_sig['final_signal'] = 1
+        df_sig['atr'] = 2.0
+
+        # 2. Engine Run
+        sig, price, atr, extras = engine.analyze_market(
+            self.config, '5m', _StubStrategy(df_sig)
+        )
+
+        # 3. State Process
+        state.process_tick(price, signal=sig, current_atr=atr, **extras)
+
+        # Verify Position Opened
+        self.assertEqual(state.position, 1)
+        self.assertEqual(state.avg_entry, 100.0)
+        self.assertEqual(state.entry_atr, 2.0)
 
 if __name__ == '__main__':
     unittest.main()

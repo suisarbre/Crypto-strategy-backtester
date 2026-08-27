@@ -22,11 +22,9 @@ class TradeStateManager:
         # self.load_params()
         
         # [NEW] Select strategy logic
-        # Use 'active_strategy' key from config if present, otherwise fall back to cfg.ACTIVE_STRATEGY
-        strategy_name = self.config.get('active_strategy', cfg.ACTIVE_STRATEGIES[0] if hasattr(cfg, 'ACTIVE_STRATEGIES') else 'standard')
-        # Fallback if AVAILABLE_STRATEGIES exists but active_strategy is missing
-        if not strategy_name: strategy_name = 'standard'
-        
+        # Use 'active_strategy' from config, else the configured default.
+        strategy_name = self.config.get('active_strategy') or getattr(cfg, 'ACTIVE_STRATEGY', 'standard')
+
         self.logic = strategies.get_strategy(strategy_name)
         
         # Account state
@@ -75,15 +73,14 @@ class TradeStateManager:
         with self.lock:
             self.config = new_config
             
-            # [NEW] Update strategy logic on config change
+            # [NEW] Update strategy logic on config change.
+            # Always rebuild: two JSON strategies share the JsonStrategyLogic class,
+            # so an isinstance check would silently keep the previous rules loaded.
+            # resolve_strategy_class raises on an unknown key rather than no-op'ing,
+            # which previously left trades running under the old strategy (ADR-001).
             new_strat_name = self.config.get('active_strategy')
             if new_strat_name:
-                # Recreate strategy instance if name changed (low cost)
-                # Compare by class type
-                target_cls = strategies.STRATEGY_MAP.get(new_strat_name)
-                if target_cls:
-                    if self.logic is None or not isinstance(self.logic, target_cls):
-                        self.logic = target_cls()
+                self.logic = strategies.get_strategy(new_strat_name, base_config=self.config)
 
     def process_tick(self, price, signal=None, current_atr=0.0, timestamp=None, **kwargs):
         """

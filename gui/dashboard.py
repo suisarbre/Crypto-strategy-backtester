@@ -4,7 +4,6 @@ import json
 import asyncio
 import random
 import time
-import glob
 import mimetypes
 from datetime import datetime
 
@@ -12,6 +11,7 @@ import pandas as pd
 
 from nicegui import ui, app
 import config as cfg
+import strategies as strategies_pkg
 
 # Local Modules
 from data.data_loader import fetch_raw_data
@@ -1655,30 +1655,22 @@ class TradingDashboard:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _discover_strategies(self):
-        strategies = {}
-        repo_dir = os.path.join(BASE_DIR, 'strategies', 'repository')
+        """
+        {key: json_path}, delegated to strategies.discover_strategies().
 
-        if os.path.exists(repo_dir):
-            for fpath in sorted(glob.glob(os.path.join(repo_dir, '*.json'))):
-                try:
-                    with open(fpath, 'r') as f:
-                        data = json.load(f)
-                    name = data.get(
-                        'strategy_name',
-                        os.path.basename(fpath).replace('.json', ''),
-                    )
-                    strategies[name.lower()] = fpath
-                except Exception:
-                    name = os.path.basename(fpath).replace('.json', '')
-                    strategies[name] = fpath
+        This used to key on the JSON's lowercased 'strategy_name' ("Regime Rider"
+        -> 'regime rider') while STRATEGY_MAP keyed on short identifiers, so two of
+        four shipped strategies never resolved. Discovery now lives in exactly one
+        place so the two sides cannot drift apart again (ADR-001).
+        """
+        return strategies_pkg.discover_strategies()
 
-        default_path = os.path.join(BASE_DIR, 'strategies', 'strategies.json')
-        if os.path.exists(default_path) and 'standard' not in strategies:
-            strategies['standard'] = default_path
-        if not strategies:
-            strategies['standard'] = default_path
-
-        return strategies
+    def _strategy_options(self):
+        """{key: display label} for the selector — keys stay canonical."""
+        return {
+            key: strategies_pkg.display_name(key)
+            for key in self._discover_strategies()
+        }
 
     def _get_strategy_info(self, path):
         try:
