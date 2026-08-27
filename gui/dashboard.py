@@ -76,7 +76,12 @@ class TradingDashboard:
         if not isinstance(sys.stdout, StreamRedirector):
             self.original_stdout = sys.stdout
             self.original_stderr = sys.stderr
-            sys.stdout = StreamRedirector(sys.stdout, self._handle_stream_message, quiet=True)
+            # quiet=False so the terminal keeps receiving output. With quiet=True
+            # StreamRedirector.write() never forwarded to the real stream, so
+            # importing this module silenced print() process-wide until a browser
+            # client connected — which made the dashboard impossible to
+            # print-debug, and also swallowed monitor_position's live status line.
+            sys.stdout = StreamRedirector(sys.stdout, self._handle_stream_message, quiet=False)
             sys.stderr = StreamRedirector(sys.stderr, self._handle_stream_message, quiet=False)
         else:
             sys.stdout.callback = self._handle_stream_message
