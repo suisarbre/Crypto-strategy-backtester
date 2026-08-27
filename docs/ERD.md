@@ -1,5 +1,21 @@
 # Entity Relationship Diagram (ERD)
 
+> ### ⚠️ Status: LOGICAL MODEL — does not match the actual schemas
+>
+> **Verified 2026-08-26.** This is correctly labelled a logical model, but the
+> entities below have drifted from what the code actually writes. Do not use it
+> to predict a file's columns.
+>
+> | This document | Reality |
+> |---|---|
+> | `TRADE_LOG` — one row per completed trade (`entry_time` *and* `exit_time`, `entry_price` *and* `exit_price`) | `logs/trades.csv` — one row per **event**: separate ENTRY and EXIT rows, each with a single `Timestamp` and `Price`. No `id`, no `size` (`Qty` is hardcoded `1`), no `exit_reason` column (embedded in the `Event` string as `EXIT (stop_loss)`), no `strategy_name` field (buried in a `Config_Dump` JSON blob). |
+> | `OPTIMIZATION_RESULT` | `logs/optimizations.csv`. No `id`, no `sharpe_ratio`, no `timeframe` column — timeframe is inside `Best_Params`. |
+> | `STRATEGY_CONFIG` | JSON files in `strategies/repository/`. Keyed by **filename stem**, not `name` — see ADR-001. |
+> | `PORTFOLIO_STATE` | **No counterpart at all.** Balance and positions live in memory on `TradeStateManager` and are lost on restart. |
+>
+> If a real persistence layer is ever built, record the decision as an ADR first
+> — see `docs/decisions/`.
+
 This document visualizes the data entities and their relationships within the **Modular Algorithmic Trading Platform**. Since the system currently uses CSV files and JSON configuration rather than a relational database, this diagram represents the *logical* data model.
 
 ```mermaid

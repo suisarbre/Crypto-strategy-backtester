@@ -1,4 +1,24 @@
 # Comprehensive Gap Analysis Report
+
+> ### ✅ CLOSED — historical snapshot, do not treat as an open to-do list
+>
+> **Written 2026-02-20. Re-verified 2026-08-26: every gap below has been closed,
+> and closed exactly as this report's own recommendations specified.**
+>
+> | Gap as reported | State on 2026-08-26 |
+> |---|---|
+> | Daily Loss Limit — 🔴 Missing, "zero execution logic" | **Implemented.** `TradeStateManager._check_daily_loss()` sets `is_paused` on breach (Priority 1 as written). |
+> | Universal Trailing Stop — 🟡 Partial | **Implemented.** Centralized in `_check_risk_management()` behind `USE_TRAILING_STOP` / `TS_ACTIVATION` / `TS_CALLBACK` (Priority 2). |
+> | Breakeven Logic — 🟡 Partial | **Implemented.** Same method, behind `USE_BREAKEVEN` / `BE_TRIGGER` / `BE_OFFSET` (Priority 2). |
+> | Priority 3 — risk unit tests | **Done.** `tests/test_risk_management.py`. |
+>
+> One correction to the record: REQ-UI-02 (Strategy Hot-Swap) was marked
+> **Implemented** here, but was in fact broken in two ways until 2026-08-26 —
+> the swap never reached signal generation, and two of four strategies were
+> unreachable by name. See `docs/decisions/ADR-001-strategy-identity.md`.
+>
+> Retained as a dated record. New findings belong in a new report or an ADR.
+
 **Date:** 2026-02-20
 **Scope:** C++ Engine, Python Core, Strategies, Dashboard
 **Status:** **Mixed** (C++ & Dashboard: Resolved, Core Logic: Gaps Found)

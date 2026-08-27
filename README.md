@@ -210,15 +210,33 @@ Key test files:
 
 ## Project Documentation
 
-Detailed documentation is in the `docs/` folder:
+> **Note:** this bot is **paper-only**. It has no order-execution code — the
+> exchange connection is read-only and `--live` is not implemented. See
+> [ADR-002](docs/decisions/ADR-002-execution-adapter.md).
 
-- [Architecture](docs/ARCHITECTURE.md) — System design and module relationships
-- [PRD](docs/PRD.md) — Product Requirements Document
-- [SRS](docs/SRS.md) — Software Requirements Specification
-- [Class Diagram](docs/CLASS_DIAGRAM.md) — UML class relationships
-- [Sequence Diagrams](docs/SEQUENCE_DIAGRAMS.md) — Key interaction flows
+Documentation is in `docs/`, in three tiers:
+
+**Current — trust these**
+- [Decision records](docs/decisions/) — append-only ADRs; why things are the way they are
+- [Generated diagrams](docs/generated/) — class + module graphs, rebuilt with `python tools/gen_docs.py`
 - [C++ Engine Docs](docs/cpp/) — C++ module architecture and generalization plan
-- [Dashboard Docs](docs/dashboard/) — Dashboard architecture and chart marking logic
+- [Dashboard Docs](docs/dashboard/) — dashboard architecture and chart marking logic
+
+**Design intent — partly aspirational, headers say which parts**
+- [Architecture](docs/ARCHITECTURE.md) — accurate for the data path; execution half is a proposal
+- [ERD](docs/ERD.md) — logical model; does not match the actual CSV schemas
+- [PRD](docs/PRD.md) / [SRS](docs/SRS.md) — original requirements
+- [Sequence Diagrams](docs/SEQUENCE_DIAGRAMS.md) — key interaction flows
+
+**Historical**
+- [Class Diagram](docs/CLASS_DIAGRAM.md) — superseded by `docs/generated/`
+- [Gap Analysis](docs/GAP_ANALYSIS.md) — closed; all findings resolved
+
+### Regenerating structure docs
+
+```bash
+python tools/gen_docs.py
+```
 
 ## License
 
