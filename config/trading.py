@@ -36,8 +36,12 @@ START_BALANCE = 100.0
 KERNEL_LOOKBACK_MULT = 3      # Window = lookback * mult + lookback. Original: startAtBar=25 → ~33 bars      
 
 # [Leverage & Risk Management]
-LEVERAGE_TEST_RANGE = [1, 2, 3, 4, 5, 6, 7] 
-DEFAULT_LEVERAGE = 3      
+# Fixed at 1x (ADR-003): binanceus is spot-only, so leveraged backtest results
+# have no live counterpart, and leverage let the optimizer inflate its fitness
+# score without improving the signal. The mechanism remains in the code —
+# widening this range is all that's needed to reverse the decision.
+LEVERAGE_TEST_RANGE = [1]
+DEFAULT_LEVERAGE = 1
 TP_RATIO = 0.99           
 SL_RATIO = 0.030
 

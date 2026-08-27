@@ -13,10 +13,9 @@ describe the bot as trading live. Live execution, when built, goes in a separate
 `TradeStateManager`, and testnet only. See
 `docs/decisions/ADR-002-live-execution.md`.
 
-**Leverage is simulated and has no live counterpart.** The project defaults to
-3x and optimizes over `[1..7]`, but `data_loader.py` targets `ccxt.binanceus`,
-which is spot-only. Any live path runs unleveraged and its results are not
-comparable to backtests from this repo.
+**Leverage has no live counterpart** — `data_loader.py` targets
+`ccxt.binanceus`, which is spot-only. This is why it is pinned to 1x (ADR-003);
+any live path must run unleveraged.
 
 **The risk checks in `TradeStateManager.process_tick()` are ordered, and the
 order is load-bearing.**
@@ -25,6 +24,21 @@ partial exit → *then* the strategy signal. Each guard `return`s and ends the
 tick. Never insert an early-return above the daily-loss check, and never let a
 strategy open a position before the exit guards have run — routing entries
 around `process_tick()` was a real bug that bypassed every risk check.
+
+**`SL_RATIO` must stay below `DAILY_LOSS_LIMIT`** (both are leveraged PnL, so
+directly comparable; currently 0.03 < 0.05). Invert that and the hard stop-loss
+becomes unreachable — the daily guard fires first and additionally pauses for
+the day. See ADR-004.
+
+**The daily-loss guard measures equity, not realized balance, and force-closes
+before pausing.** It has to close: `process_tick()` returns the moment
+`is_paused` is set, so pausing with a position open would strand it with every
+downstream guard disabled. The pause lifts on day change; `is_manual_stop` does
+not. See ADR-004.
+
+**Leverage is fixed at 1x** (ADR-003). The mechanism is still in the code and
+`entry_leverage` still scales the fee — widening `LEVERAGE_TEST_RANGE` reverses
+it. Backtests from before 2026-08-26 used 3x and are not comparable.
 
 **There is exactly one live strategy instance: `TradeStateManager.logic`.**
 `TradingEngine` is deliberately stateless and takes the strategy as an argument

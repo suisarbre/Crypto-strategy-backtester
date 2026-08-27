@@ -47,3 +47,5 @@ actually came from.
 |---|---|---|
 | [001](ADR-001-strategy-identity.md) | Implemented | Strategy identity keys on filename stem |
 | [002](ADR-002-live-execution.md) | Accepted | Live execution is a separate LiveTrader over a shared risk core |
+| [003](ADR-003-leverage-fixed-at-1x.md) | Implemented | Leverage is fixed at 1x |
+| [004](ADR-004-daily-loss-marks-to-market.md) | Implemented | The daily loss limit measures equity and force-closes |
