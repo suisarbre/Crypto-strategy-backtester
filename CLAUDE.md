@@ -8,8 +8,15 @@ backtesting and PSO optimization, and a NiceGUI dashboard.
 **The bot cannot place orders. It is paper-only.**
 `data/data_loader.py` calls only `fetch_ohlcv()` and `fetch_ticker()`. There is
 no order code anywhere, and the `--live` CLI flag is parsed and discarded. Do not
-describe the bot as trading live, and do not add order calls without working
-through `docs/decisions/ADR-002-execution-adapter.md` first.
+describe the bot as trading live. Live execution, when built, goes in a separate
+`LiveTrader` over a shared `core/risk.py` — never as a seam inside
+`TradeStateManager`, and testnet only. See
+`docs/decisions/ADR-002-live-execution.md`.
+
+**Leverage is simulated and has no live counterpart.** The project defaults to
+3x and optimizes over `[1..7]`, but `data_loader.py` targets `ccxt.binanceus`,
+which is spot-only. Any live path runs unleveraged and its results are not
+comparable to backtests from this repo.
 
 **The risk checks in `TradeStateManager.process_tick()` are ordered, and the
 order is load-bearing.**

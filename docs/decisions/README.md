@@ -46,4 +46,4 @@ actually came from.
 | ADR | Status | Title |
 |---|---|---|
 | [001](ADR-001-strategy-identity.md) | Implemented | Strategy identity keys on filename stem |
-| [002](ADR-002-execution-adapter.md) | Proposed | Order execution lives behind an ExecutionAdapter |
+| [002](ADR-002-live-execution.md) | Accepted | Live execution is a separate LiveTrader over a shared risk core |

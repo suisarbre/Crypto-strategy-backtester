@@ -9,7 +9,10 @@
 >   A repo-wide search for `create_order` / `place_order` / `args.live` returns
 >   zero matches. `data/data_loader.py` calls only `fetch_ohlcv()` and
 >   `fetch_ticker()` — the CCXT client is **read-only**. The `--live` CLI flag is
->   parsed and silently discarded. See `docs/decisions/ADR-002-execution-adapter.md`.
+>   parsed and silently discarded. See `docs/decisions/ADR-002-live-execution.md`,
+>   which scopes live execution to a separate `LiveTrader` on testnet rather than
+>   the "Execution Layer" shown below. Note also that leverage (default 3x here)
+>   has no live counterpart: `ccxt.binanceus` is spot-only.
 > - **`RiskManager` is not a separate component.** Risk lives inside
 >   `TradeStateManager` (`_check_daily_loss`, `_check_risk_management`) and runs
 >   as an ordered exit cascade *before* the strategy is consulted — not as a

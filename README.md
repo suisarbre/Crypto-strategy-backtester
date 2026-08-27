@@ -211,8 +211,9 @@ Key test files:
 ## Project Documentation
 
 > **Note:** this bot is **paper-only**. It has no order-execution code — the
-> exchange connection is read-only and `--live` is not implemented. See
-> [ADR-002](docs/decisions/ADR-002-execution-adapter.md).
+> exchange connection is read-only and `--live` is not implemented. Leverage is
+> simulated and has no live counterpart (`ccxt.binanceus` is spot-only). See
+> [ADR-002](docs/decisions/ADR-002-live-execution.md).
 
 Documentation is in `docs/`, in three tiers:
 
