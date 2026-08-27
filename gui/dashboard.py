@@ -1422,7 +1422,11 @@ class TradingDashboard:
                 signal_markers = generate_signal_markers(df, warmup=50)
 
                 # ── Build chart_data using vectorized ops (NOT iterrows) ──
-                timestamps = df['timestamp'].astype('int64') // 10**9  # ns → s
+                # Resolution-independent: pandas 2+ gives datetime64[ms] here and
+                # datetime64[us] via the CSV cache, so a hardcoded //10**9 is off
+                # by 10**3–10**6 and lands every candle in 1970.
+                from utils import to_epoch_seconds
+                timestamps = to_epoch_seconds(df['timestamp'])
                 opens  = df['open'].values
                 highs  = df['high'].values
                 lows   = df['low'].values

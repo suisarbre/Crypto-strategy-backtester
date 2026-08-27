@@ -14,6 +14,22 @@ from datetime import datetime
 import time
 import math
 
+
+def to_epoch_seconds(series):
+    """
+    Convert a pandas datetime64 Series to int64 epoch SECONDS, independent of the
+    column's datetime resolution.
+
+    Do NOT use `series.astype('int64') // 10**9`. That assumes nanosecond
+    resolution, which pandas 1.x always produced but pandas 2+ does not:
+    `pd.to_datetime(x, unit='ms')` yields datetime64[ms], and round-tripping
+    through the CSV cache yields datetime64[us]. Under those the divisor is wrong
+    by 10**6 and 10**3 respectively — which put every chart candle in 1970 and
+    made the chart look empty.
+    """
+    return series.astype('datetime64[s]').astype('int64')
+
+
 def wait_until_next_candle(interval_minutes):
     """
     Sleep until the next candle close (aligned to clock intervals).
