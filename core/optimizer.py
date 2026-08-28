@@ -227,72 +227,48 @@ def transform_ranges_to_generic_format(ranges):
     return ind_names, ind_values, filt_names, filt_values
 
 
-def execute_optimization_logic(current_config, custom_ranges=None, strategy_path=None):
+def _failure_result():
+    """Uniform failure shape for execute_optimization_logic — same 6-tuple as
+    success, with params=None and score=-999, so callers never have to sniff
+    tuple lengths or handle a bare None."""
+    return None, 0, 0, 0, getattr(cfg, 'START_BALANCE', 100.0), -999
+
+
+def execute_optimization_logic(current_config, custom_ranges=None, strategy_path=None, df=None):
     """
     Optimizes strategy parameters based on current configuration.
     Tests available strategies to find the best settings.
     If custom_ranges is provided, it uses those ranges instead of generating default ones.
+
+    df: optional pre-sliced OHLCV window (used by execute_rolling_wfa). When
+    given, it is used as-is for every timeframe instead of fetching, the caller
+    owns any train/test splitting, and the final OOS validation is skipped —
+    otherwise every "rolling" window would silently optimize on freshly fetched
+    full data instead of its own slice.
+
+    Returns: (best_params | None, wins, trades, mdd, balance, score) — always a
+    6-tuple; score is -999 and best_params is None on failure.
     """
     start_time = datetime.now()
     print(f"\n[{start_time.strftime('%H:%M')}] [Optimization] Starting Precise Strategy & Parameter Optimization...")
-    
-    # 1.   ()
-    df_raw_origin = fetch_raw_data(cfg.SYMBOL, cfg.TIMEFRAME, cfg.MAX_FETCH_LIMIT)
-    if df_raw_origin is None: 
-        return None, 0, 0, 0, 0
-    
-    # [NEW] Get Timeframes
+
+    # Availability check only — the per-timeframe loop fetches its own data.
+    if df is None:
+        df_raw_origin = fetch_raw_data(cfg.SYMBOL, cfg.TIMEFRAME, cfg.MAX_FETCH_LIMIT)
+        if df_raw_origin is None:
+            return _failure_result()
+
     timeframes_to_test = cfg.AVAILABLE_TIMEFRAMES if hasattr(cfg, 'AVAILABLE_TIMEFRAMES') else ['5m']
     strategies_to_test = cfg.AVAILABLE_STRATEGIES if hasattr(cfg, 'AVAILABLE_STRATEGIES') else ['standard']
-    
+
     print(f"   >>> Timeframes to Test: {timeframes_to_test}")
     print(f"   >>> Strategies to Test: {strategies_to_test}")
 
-    # [WFA Logic]
+    # [WFA] In-sample split settings, applied per timeframe inside the loop.
     wfa_window = getattr(cfg, 'WFA_WINDOW_SIZE', 15000)
     train_ratio = getattr(cfg, 'WFA_TRAIN_RATIO', 0.7)
-
-    # 1. Window Slicing ( N )
-    if len(df_raw_origin) > wfa_window:
-        df_raw_origin = df_raw_origin.tail(wfa_window).copy().reset_index(drop=True)
-    
-    # 2. IS / OOS Split
-    total_bars = len(df_raw_origin)
-    oos_size = int(total_bars * (1.0 - train_ratio)) # : 30%
     min_is_size = 2000
-    
-    df_is = df_raw_origin
-    df_oos = None
-    
-    if total_bars >= (min_is_size + oos_size):
-        split_idx = total_bars - oos_size
-        df_is = df_raw_origin.iloc[:split_idx].copy()
-        df_oos = df_raw_origin.iloc[split_idx:].copy()
-        print(f"\n [WFA Split] Window={total_bars} (Train Ratio={train_ratio})")
-        print(f"   => In-Sample (Train): {len(df_is)} bars (0 ~ {split_idx})")
-        print(f"   => Out-of-Sample (Test): {len(df_oos)} bars ({split_idx} ~ end)")
-    else:
-        print(f"\n[Warning] Not enough data for OOS test (Total={total_bars})")
-    
-    #     
-    #   fetch_raw_data    Warning .
-    #    config.TIMEFRAME  'tf'  .
-    # , fetch_raw_data     OOS  .
-    #      fetch_raw_data   
-    #   df_raw_origin  ,
-    #   Multi-Timeframe   5m  15m    .
-    # ,       ...
-    # OOS     .
-    
-    #    :
-    # df_raw_origin     (config.TIMEFRAME ).
-    #    for tf in timeframes_to_test: 
-    # tf config.TIMEFRAME     .
-    #   for tf in ...    ''  
-    #   ...
-    pass # (This block replaces the initial setup to hint subsequent changes)
 
-    #    
     global_best_score = -999
     global_best_params = current_config.copy()
     global_best_wins = 0
@@ -327,12 +303,6 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
             target_bars = local_config.get('max_bars_back', 3000)
             bars_list = [target_bars] 
             
-            #     (Float )
-            def get_range(val, step=2):
-                val = int(val)
-                low = max(1, val - step)
-                return sorted(list(set([low, val, val + step])))
-
             def get_fine_range(val, step=1, count=1, min_val=1, max_val=None, is_float=False):
                 if not is_float:
                     val = int(val)
@@ -376,28 +346,32 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
             total_iter = (len(bars_list) * len(rsi_range) * len(wt_ch_range) * len(wt_avg_range) * len(cci_range) * len(adx_len_range))
             count = 0
             
-            # [Fix]   (fetch logic handles caching internally, but we need fresh specific tf)
-            # data_loader.fetch_raw_data uses 'fetch_OHLCV' which takes timeframe.
-            # So we must call fetch for EACH timeframe loop.
+            # Each timeframe needs its own fetch — unless the caller supplied a
+            # pre-sliced window, which is used verbatim (the caller owns splits).
             try:
-                df_raw_tf = fetch_raw_data(cfg.SYMBOL, tf, cfg.MAX_FETCH_LIMIT)
-                if df_raw_tf is None or len(df_raw_tf) < 500:
-                    print(f"      Running out of data for {tf}, skipping...")
-                    continue
-                
-                # [WFA OOS Split inside Loop]
-                #      
-                df_optim = df_raw_tf
-                if len(df_raw_tf) > wfa_window:
-                    df_optim = df_raw_tf.tail(wfa_window).copy().reset_index(drop=True)
+                if df is not None:
+                    if len(df) < 500:
+                        print(f"      Supplied window too small ({len(df)} bars), skipping...")
+                        continue
+                    df_optim = df.copy().reset_index(drop=True)
+                else:
+                    df_raw_tf = fetch_raw_data(cfg.SYMBOL, tf, cfg.MAX_FETCH_LIMIT)
+                    if df_raw_tf is None or len(df_raw_tf) < 500:
+                        print(f"      Running out of data for {tf}, skipping...")
+                        continue
 
-                current_total = len(df_optim)
-                current_oos_size = int(current_total * (1.0 - train_ratio))
-                
-                if current_total >= (min_is_size + current_oos_size):
-                     split_idx = current_total - current_oos_size
-                     #  IS  
-                     df_optim = df_optim.iloc[:split_idx].copy().reset_index(drop=True)
+                    # [WFA] Trim to window, then drop the OOS tail from the
+                    # in-sample data used for optimization.
+                    df_optim = df_raw_tf
+                    if len(df_raw_tf) > wfa_window:
+                        df_optim = df_raw_tf.tail(wfa_window).copy().reset_index(drop=True)
+
+                    current_total = len(df_optim)
+                    current_oos_size = int(current_total * (1.0 - train_ratio))
+
+                    if current_total >= (min_is_size + current_oos_size):
+                        split_idx = current_total - current_oos_size
+                        df_optim = df_optim.iloc[:split_idx].copy().reset_index(drop=True)
             except Exception as e:
                 print(f"      Error fetching data for {tf}: {e}")
                 continue
@@ -436,24 +410,18 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
                         }
                     
                     print(f"       C++ Coarse Scan ({bars} bars)...", flush=True)
-                    
-                    # [DEBUG] Print raw ranges dict BEFORE transformation
-                    print(f"\n[DEBUG] RAW ranges dict keys: {list(ranges.keys())}")
-                    print(f"[DEBUG] RAW ranges dict: {ranges}\n")
-                    
-                # [NEW] Transform ranges to optimize_generic format
+
                     if not ranges:
                          print("[ERROR] 'ranges' dict is empty! Cannot run optimization.")
-                         return None
-                         
+                         return _failure_result()
+
                     ind_names, ind_values, filt_names, filt_values = transform_ranges_to_generic_format(ranges)
-                    
+
                     if not ind_names:
                          print(f"[ERROR] ind_names is empty after transform! Raw ranges keys: {list(ranges.keys())}")
-                         return None
-                    
-                    # [NEW] Load strategies.json
-                    import os
+                         return _failure_result()
+
+                    # Load strategies.json
                     strategy_json_content = ""
                     # Priority: 1. Argument, 2. Default Path
                     strat_path = strategy_path if strategy_path else os.path.join(os.path.dirname(__file__), '..', 'strategies', 'strategies.json')
@@ -462,24 +430,9 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
                             strategy_json_content = f.read()
                     else:
                         print(f"\nWarning: strategies.json not found at {strat_path}")
-                    
-                    # [DEBUG] Log exactly what we're passing to C++
-                    print(f"\n{'='*70}")
-                    print(f"[DEBUG] Parameters being passed to optimize_generic:")
-                    print(f"  Data shape: {len(df_slice_raw)} bars")
-                    print(f"  Indicators ({len(ind_names)}):")
-                    for name, vals in zip(ind_names, ind_values):
-                        print(f"    {name}: {vals}")
-                    print(f"  Filters ({len(filt_names)}):")
-                    for name, vals in zip(filt_names, filt_values):
-                        print(f"    {name}: {vals}")
-                    print(f"  JSON length: {len(strategy_json_content)} chars")
-                    print(f"  Min trades: {int(cfg.OPTIMIZER_MIN_TRADES)}")
-                    print(f"  Kernel params: lookback={int(local_config.get('kernel_lookback', 9))}, weight={float(local_config.get('kernel_weight', 8.0))}, mult={int(getattr(cfg, 'KERNEL_LOOKBACK_MULT', 5))}")
-                    print(f"{'='*70}\n")
-                    
-                    # [NEW] Call optimize_generic (JSON-based modular optimizer)
-                    # Or use PSO if configured (per Architecture Report)
+
+                    # Call optimize_generic (JSON-based modular optimizer),
+                    # or PSO if configured (per Architecture Report)
                     use_pso = getattr(cfg, 'USE_PSO', False)
                     
                     if use_pso:
@@ -490,7 +443,6 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
                             use_pso = False
                     
                     if not use_pso:
-                        print(f"[DEBUG] Python: Calling C++ optimize_generic...", flush=True)
                         res_list = cpp_engine.optimize_generic(
                             df_slice_raw['open'].values.astype(float),
                             df_slice_raw['high'].values.astype(float),
@@ -548,7 +500,6 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
             ft_cci = get_fine_range(best_params['cci_length'], count=1)
             ft_adx_len = get_fine_range(best_params['adx_length'], count=1)
             ft_adx_th = get_fine_range(best_params['adx_threshold'], count=1)
-            ft_adx_th = get_fine_range(best_params['adx_threshold'], count=1)
             ft_k = get_fine_range(best_params['neighbors'], count=1)
             
             # [Safety] Use configured leverage range for fine tuning as well (or keep strictly to refined)
@@ -585,14 +536,14 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
                 ft_bars = best_params['max_bars_back']
                 df_slice_ft = df_optim.tail(ft_bars).copy().reset_index(drop=True)
                 
-                # [Modularization Phase 1] Generic Recursive Grid Search calling
-                # 1. Transform Ranges (Use Helper Function!)
                 ind_names, ind_values, filt_names, filt_values = transform_ranges_to_generic_format(ranges)
-                
-                # [Strategies.json] Load Strategy Content
-                # We load it here to pass to C++ engine
-                import os
-                strat_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'strategies', 'strategies.json')
+
+                # Load strategy content to pass to the C++ engine.
+                # Same priority as the coarse scan: explicit argument first —
+                # this used to hardcode the default, so fine-tuning a repository
+                # strategy silently scored against strategies.json instead.
+                strat_path = strategy_path if strategy_path else os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)), 'strategies', 'strategies.json')
                 strategy_json_content = "{}"
                 if os.path.exists(strat_path):
                     with open(strat_path, 'r') as f:
@@ -670,7 +621,6 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
                         best_wins = plateau_best_res['wins']
                         best_trades = plateau_best_res['trades']
                         best_mdd = plateau_best_res['mdd']
-                        best_mdd = plateau_best_res['mdd']
             else:
                  pass # Fallback skipped per migration request
             
@@ -702,8 +652,10 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
     print(f"   Fitness: Sortino Ratio + MDD Penalty (per Architecture Report)")
     print(f"{'='*70}")
 
-    # [OOS Validation Report]
-    if global_best_score != -999:
+    # [OOS Validation Report] — skipped when the caller supplied the data
+    # (e.g. rolling WFA), because the caller owns its own OOS split and this
+    # fetch of the latest bars would overlap the supplied training window.
+    if global_best_score != -999 and df is None:
         try:
             print(f"\n[OOS] [Out-of-Sample] Verifying OOS Results... (Testing Future 5000 bars)")
             # Fetch full 15000 for winning timeframe
@@ -712,52 +664,26 @@ def execute_optimization_logic(current_config, custom_ranges=None, strategy_path
             
             if df_full_final is not None and len(df_full_final) >= 7000:
                 oos_size_final = 5000
-                warmup_buffer = 500 
-                
-                # OOS 
+                warmup_buffer = 500
+
+                # OOS split, extended backwards by a warmup buffer so the
+                # indicators are warm by the time the pure OOS region starts.
                 split_idx_final = len(df_full_final) - oos_size_final
-                
-                # Buffer   (Warmup)
                 calc_start_idx = max(0, split_idx_final - warmup_buffer)
-                
-                # Buffer   ->   -> (Buffer) 
-                calc_start_idx = max(0, split_idx_final - warmup_buffer)
-                
-                # [WFA]   
                 df_oos_extended = df_full_final.iloc[calc_start_idx:].copy()
                 
                 # Check timeframe consistency (ensure we have enough OOS bars)
                 # We use extended buffer, so check if we have enough data
                 if len(df_oos_extended) > (oos_size_final + 100):
-                    # [Fix] Must calculate indicators/signals first!
-                    # run_deep_backtest expects 'final_signal' column.
-                    from analysis.indicators import add_indicators
-                    from analysis.signals import generate_signals 
-                    
-                    # 1. Add Indicators (with params)
+                    # run_deep_backtest expects a 'final_signal' column, so
+                    # compute indicators + signals with the OPTIMIZED params,
+                    # then trim the warmup buffer to get the pure OOS region.
                     df_oos_extended = add_indicators(df_oos_extended, global_best_params)
-                    
-                    # 2. Generate Signals using OPTIMIZED params
                     df_oos_extended = generate_signals(df_oos_extended, global_best_params)
-                    
-                    # 3. Trim Buffer (Get pure OOS)
-                    # Note: We want the last 5000 bars representing the future.
                     df_oos_final = df_oos_extended.tail(oos_size_final).copy()
-                    
-                    # Run deep backtest using PYTHON backtester (signals.py + cpp_engine inside)
-                    # We utilize the Python wrapper to get nice stats
-                    from core.backtester import run_deep_backtest
-                    
-                    # Note: run_deep_backtest expects 'config' dict.
-                    oos_dict = run_deep_backtest(df_oos_final, global_best_params)
-                    # run_deep_backtest returns tuple (bal, wins, trades, mdd, bal) or dict?
-                    # Checking backtester.py again... 
-                    # It returns values: bal, wins, trades, mdd, bal
-                    # It does NOT return a dict. My previous code assumed a dict.
-                    
-                    oos_bal, oos_wins, oos_trades, oos_mdd, _ = oos_dict                    
-                    
-                    # Calculate Win Rate safely
+
+                    oos_bal, oos_wins, oos_trades, oos_mdd, _ = run_deep_backtest(df_oos_final, global_best_params)
+
                     oos_wr = (oos_wins / oos_trades * 100) if oos_trades > 0 else 0
                     
                     print(f"   [Done] OOS Performance: Bal {oos_bal:.2f} | WR {oos_wr:.1f}% ({oos_trades} trades) | MDD {oos_mdd*100:.2f}%")
@@ -830,14 +756,18 @@ def execute_rolling_wfa(current_config, strategy_path=None):
         
         print(f"\n   Window {w+1}/{n_windows}: Train[{start_idx}:{train_end}] Test[{train_end}:{test_end}]")
         
-        # Optimize on training data
+        # Optimize on THIS window's training slice. Passing df is what makes
+        # this a rolling analysis — without it, execute_optimization_logic
+        # refetches the latest full dataset and every window optimizes on the
+        # same data, then "validates" on a df_test that overlaps it.
         try:
             result = execute_optimization_logic(
-                current_config, 
-                strategy_path=strategy_path
+                current_config,
+                strategy_path=strategy_path,
+                df=df_train
             )
-            
-            if result is None or result[5] == -999:
+
+            if result is None or result[0] is None or result[5] == -999:
                 print(f"     No valid result for window {w+1}")
                 continue
             
@@ -951,8 +881,8 @@ def execute_smart_optimization(current_config, strategy_path=None):
 
     # Run Phase 1
     res_p1 = execute_optimization_logic(current_config, custom_ranges=ranges_p1, strategy_path=strategy_path)
-    
-    if not res_p1:
+
+    if not res_p1 or res_p1[0] is None:
         print("   [Smart Optimization] Phase 1 Failed. Returning None.")
         return None
         

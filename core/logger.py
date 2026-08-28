@@ -10,6 +10,9 @@ class CsvLogger:
         self._init_file()
 
     def _init_file(self):
+        parent = os.path.dirname(self.filename)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         if not os.path.exists(self.filename):
             with open(self.filename, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=self.fieldnames)

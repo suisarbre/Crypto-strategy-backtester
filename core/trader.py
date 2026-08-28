@@ -57,9 +57,9 @@ class TradingEngine:
 
 class PaperTrader:
     def __init__(self):
-        # [Log] Create logger
-        self.trade_logger = TradeLogger('trades.csv')
-        self.opt_logger = OptimizationLogger('optimizations.csv')
+        # [Log] Create loggers (default paths under logs/, per CLAUDE.md)
+        self.trade_logger = TradeLogger()
+        self.opt_logger = OptimizationLogger()
         
         # [Refactor] Delegate to state manager (inject logger)
         self.state = TradeStateManager(logger=self.trade_logger)
@@ -78,33 +78,25 @@ class PaperTrader:
     def run_optimization_thread(self):
         if self.is_optimizing: return
         self.is_optimizing = True
-        
-        from concurrent.futures import ThreadPoolExecutor
+
         config_copy = self.state.config.copy()
-        
-        def _process_waiter():
+
+        def _worker():
             try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(execute_optimization_logic, config_copy)
-                    ret = future.result()
-                    self._handle_optimization_result(ret)
+                ret = execute_optimization_logic(config_copy)
+                self._handle_optimization_result(ret)
             except Exception as e:
                 print(f"Optimization Process Error: {e}")
             finally:
                 self.is_optimizing = False
-        
-        t = threading.Thread(target=_process_waiter, daemon=True)
-        t.start()
-        
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _handle_optimization_result(self, ret):
         try:
-            # Optimization result is passed in as 'ret'
-            if len(ret) == 6:
-                new_params, w, t, m, b, s = ret
-            else:
-                new_params, w, t, m, b = ret
-                s = 0.0 # fallback
-            
+            # Always a 6-tuple; params is None (and score -999) on failure.
+            new_params, w, t, m, b, s = ret
+
             with self.lock:
                 if new_params:
                     # [Multi-Timeframe] Apply 10% improvement rule

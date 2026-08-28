@@ -71,9 +71,14 @@ class TestOptimizer(unittest.TestCase):
         }
 
         # Act
+        # USE_PSO must be off: this test exercises the grid path via
+        # optimize_generic. With PSO on, the unconfigured mock's optimize_pso
+        # returns a truthy MagicMock, the grid fallback never fires, and the
+        # optimizer reports no valid results.
         with patch.dict('sys.modules', {'cpp_engine': mock_cpp}):
             with patch('config.AVAILABLE_TIMEFRAMES', ['5m']), \
-                 patch('config.AVAILABLE_STRATEGIES', ['standard']):
+                 patch('config.AVAILABLE_STRATEGIES', ['standard']), \
+                 patch('config.USE_PSO', False):
                  
                 best_params, wins, trades, mdd, bal, score = optimizer.execute_optimization_logic(current_config)
         
