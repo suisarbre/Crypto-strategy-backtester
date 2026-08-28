@@ -22,8 +22,6 @@ class BenchmarksPanel:
         Run the C++ backtest to get strategy metrics and compute buy-and-hold
         baseline for comparison.  Returns (strategy_metrics, baseline_metrics).
         """
-        import numpy as np
-
         # ── Trim to last 7 days of data ──
         tf_minutes = self._tf_to_minutes(cfg.TIMEFRAME)
         bars_per_day = 1440.0 / tf_minutes

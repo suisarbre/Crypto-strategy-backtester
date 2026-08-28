@@ -372,7 +372,15 @@ os.makedirs('chart_data', exist_ok=True)
 async def index():
     view = DashboardView(dashboard)
     view.build_ui()
-    ui.context.client.on_disconnect(view.dispose)
+
+    client = ui.context.client
+    # A heavy load can starve the event loop long enough for the websocket to
+    # drop and NiceGUI to show "connection lost". If it reconnects the same
+    # client rather than reloading the page, the view must re-register or its
+    # log panel goes permanently silent.
+    client.on_connect(lambda: dashboard.attach(view))
+    client.on_disconnect(view.dispose)
+
     ui.timer(0.1, view.on_page_load, once=True)
 
 
