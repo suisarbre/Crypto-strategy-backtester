@@ -888,7 +888,7 @@ class OptimizationPanel:
         # Refresh chart
         if self.dash._optim_dialog:
             self.dash._optim_dialog.close()
-        await self.dash.run_backtest_simulation()
+        await self.dash.chart_panel.run_backtest_simulation()
 
     def _update_strategy_json(self, path, best_params):
         """
@@ -940,7 +940,7 @@ class OptimizationPanel:
             while getattr(self.dash.bot, 'is_optimizing', False):
                 await asyncio.sleep(1.0)
             self.dash.log('✅ Initial optimization complete — updating chart…')
-            await self.dash.run_backtest_simulation()
+            await self.dash.chart_panel.run_backtest_simulation()
         except Exception as e:
             self.dash.log(f'❌ Optimization failed: {e}')
         finally:

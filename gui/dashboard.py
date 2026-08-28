@@ -26,6 +26,7 @@ from gui.components.layout import AppLayout
 # Panels — behaviour split out of this module; state still lives here (ADR-005)
 from gui.panels.optimization import OptimizationPanel
 from gui.panels.benchmarks import BenchmarksPanel
+from gui.panels.chart_view import ChartPanel
 
 # ==============================================================================
 # 1.  System Configuration
@@ -77,6 +78,7 @@ class TradingDashboard:
         # Panels own behaviour, not state — see gui/panels/
         self.optimization = OptimizationPanel(self)
         self.benchmarks = BenchmarksPanel(self)
+        self.chart_panel = ChartPanel(self)
 
         os.makedirs('chart_data', exist_ok=True)
 
@@ -166,7 +168,7 @@ class TradingDashboard:
 
             self.client_connected = True
             await asyncio.sleep(0.5)
-            await self.init_chart()
+            await self.chart_panel.init_chart()
         except Exception as e:
             print(f'Error in on_page_load: {e}')
 
@@ -308,332 +310,13 @@ class TradingDashboard:
     #  Chart Control
     # ──────────────────────────────────────────────────────────────────────────
 
-    async def init_chart(self):
-        if self.chart:
-            self.chart.init_chart()
-        self.log('✅ Chart mounted')
 
-        # Cancel any previously scheduled backtest timer
-        if hasattr(self, '_init_timer') and self._init_timer:
-            self._init_timer.cancel()
-        self._init_timer = ui.timer(1.0, self.run_backtest_simulation, once=True)
 
-    async def run_backtest_simulation(self):
-        # ── Guard: prevent concurrent / re-entrant runs ──
-        if getattr(self, '_backtest_running', False):
-            self._backtest_pending = True          # single dedup'd retry
-            # A full load takes ~20s, so this window is wide: clicking
-            # "Apply & Preview" during one silently left the previous strategy's
-            # chart on screen, which read as the swap being ignored.
-            self.log('⏳ A load is already running — queued; chart will refresh when it finishes')
-            return False
-        self._backtest_running = True
-        self._backtest_pending = False
-        self._backtest_start_time = time.time()
-
-        # ── Pause live chart updates while the full backtest runs ──
-        if hasattr(self, 'update_timer') and self.update_timer:
-            try:
-                self.update_timer.cancel()
-            except Exception as e:
-                _report('run_backtest_simulation: could not cancel chart timer', e)
-            self.update_timer = None
-
-        try:
-            limit = cfg.MAX_FETCH_LIMIT
-            strat_name = self.active_strategy_name
-            self.log(f'Loading {cfg.SYMBOL} ({cfg.TIMEFRAME}) — strategy: {strat_name}…')
-
-            strategy_json_content = None
-            if self.active_strategy_path:
-                try:
-                    with open(self.active_strategy_path, 'r') as f:
-                        strategy_json_content = f.read()
-                except Exception as e:
-                    self.log(f'Error loading strategy: {e}')
-
-            _strat_json = strategy_json_content
-
-            def _heavy_loader():
-                """Run ALL heavy work in a thread to keep the event loop responsive."""
-                import numpy as np
-
-                df = self.fetch_and_cache_data(cfg.SYMBOL, cfg.TIMEFRAME, limit)
-                if df is None or df.empty:
-                    return None, None, None, None, 0, 0
-                if len(df) > limit:
-                    df = df.tail(limit).copy().reset_index(drop=True)
-                config = (
-                    self.bot.state.config.copy() if self.bot
-                    else cfg.CURRENT_CONFIG.copy()
-                )
-                df = add_indicators(df, config)
-                df = generate_signals(df, config, strategy_json=_strat_json)
-                from core.backtester import run_backtest_with_markers, generate_signal_markers
-                trade_markers = run_backtest_with_markers(df, config)
-                signal_markers = generate_signal_markers(df, warmup=50)
-
-                # ── Build chart_data using vectorized ops (NOT iterrows) ──
-                # Resolution-independent: pandas 2+ gives datetime64[ms] here and
-                # datetime64[us] via the CSV cache, so a hardcoded //10**9 is off
-                # by 10**3–10**6 and lands every candle in 1970.
-                from utils import to_epoch_seconds
-                timestamps = to_epoch_seconds(df['timestamp'])
-                opens  = df['open'].values
-                highs  = df['high'].values
-                lows   = df['low'].values
-                closes = df['close'].values
-
-                chart_data = []
-                for i in range(len(df)):
-                    o, h, l, c = float(opens[i]), float(highs[i]), float(lows[i]), float(closes[i])
-                    # Replace NaN/Inf with None
-                    if o != o or abs(o) == float('inf'): o = None
-                    if h != h or abs(h) == float('inf'): h = None
-                    if l != l or abs(l) == float('inf'): l = None
-                    if c != c or abs(c) == float('inf'): c = None
-                    chart_data.append({
-                        'time': int(timestamps.iloc[i]),
-                        'open': o, 'high': h, 'low': l, 'close': c,
-                    })
-
-                # ── Clean & merge markers ──
-                def _clean(m):
-                    return {
-                        'time': int(m['time']),
-                        'position': str(m['position']),
-                        'color': str(m['color']),
-                        'shape': str(m['shape']),
-                        'text': str(m.get('text', '')),
-                    }
-                cleaned_signals = [_clean(m) for m in (signal_markers or [])]
-                cleaned_trades  = [_clean(m) for m in (trade_markers or [])]
-                all_markers = sorted(
-                    cleaned_signals + cleaned_trades,
-                    key=lambda x: x['time'],
-                )
-
-                return (df, config, chart_data, all_markers,
-                        len(cleaned_signals), len(cleaned_trades))
-
-            self.log(f'Processing data (strategy: {strat_name})…')
-            result = await asyncio.to_thread(_heavy_loader)
-
-            # Unpack — _heavy_loader returns a tuple
-            if result[0] is None:
-                self.log('❌ Failed to fetch data')
-                return
-
-            df, bt_config, chart_data, all_markers, n_signals, n_trades = result
-
-            self.log(f'Processing {len(df)} bars…')
-
-            self.chart_markers = all_markers
-
-            # Update KPI
-            if hasattr(self, '_kpi_trades'):
-                self._kpi_trades.text = str(n_trades)
-
-            if self.chart:
-                try:
-                    self.chart.set_data(chart_data)
-                    if self.chart_markers:
-                        self.chart.set_markers(self.chart_markers)
-                        self.log(f'✅ {n_signals} signals + {n_trades} trade markers applied')
-                except RuntimeError:
-                    self.log('⚠️ Chart update skipped (client disconnected)')
-                    return
-
-            self.history_data = chart_data
-            self.current_price = chart_data[-1]['close'] if chart_data else 0
-            self.update_price_label(self.current_price)
-
-            if hasattr(self, 'update_timer') and self.update_timer:
-                self.update_timer.cancel()
-            self.update_timer = ui.timer(
-                cfg.CHART_UPDATE_INTERVAL_SEC, self.update_chart_loop
-            )
-            self.log('✅ Live chart updates started (trading paused)')
-
-            # ── Compute & display benchmark comparison ──
-            try:
-                strat_m, base_m = await asyncio.to_thread(
-                    self.benchmarks._compute_benchmarks, df, bt_config,
-                )
-                if strat_m and base_m:
-                    self.benchmarks._populate_benchmarks(strat_m, base_m)  # UI update — must run on main loop
-                    sortino = strat_m['sortino']
-                    sortino_txt = f'{sortino:.2f}' if sortino is not None else 'n/a (no C++ engine)'
-                    self.log(
-                        f'📊 Benchmarks: Return {strat_m["total_return"]:+.2f}% '
-                        f'| α {strat_m["total_return"] - base_m["buy_hold_return"]:+.2f}% '
-                        f'| Sortino {sortino_txt}'
-                    )
-                else:
-                    self.log('⚠️ Benchmark computation returned no data')
-            except Exception as e:
-                self.log(f'⚠️ Benchmark computation skipped: {e}')
-
-            if (
-                cfg.AUTO_OPTIMIZE_ON_START
-                and self.bot
-                and not getattr(self, 'initial_optimization_done', False)
-            ):
-                self.initial_optimization_done = True
-                asyncio.create_task(self.optimization._run_initial_optimization())
-
-        except Exception as e:
-            self.log(f'❌ Simulation error: {e}')
-            import traceback
-            traceback.print_exc()
-        finally:
-            self._backtest_running = False
-            # If another caller requested a run while we were busy, do ONE retry
-            if getattr(self, '_backtest_pending', False):
-                self._backtest_pending = False
-                ui.timer(0.5, self.run_backtest_simulation, once=True)
-
-    async def update_chart_loop(self):
-        if getattr(self, 'is_updating_chart', False):
-            return
-        try:
-            self.is_updating_chart = True
-            fetch_limit = cfg.CHART_LIVE_FETCH_LIMIT
-            latest_df = await asyncio.to_thread(
-                fetch_raw_data, cfg.SYMBOL, cfg.TIMEFRAME, fetch_limit
-            )
-
-            if latest_df is not None and not latest_df.empty:
-
-                def clean_float(x):
-                    if isinstance(x, float):
-                        if x != x:
-                            return None
-                        if x == float('inf') or x == float('-inf'):
-                            return None
-                    return x
-
-                last_row = latest_df.iloc[-1]
-                candle = {
-                    'time': int(last_row['timestamp'].timestamp()),
-                    'open': clean_float(last_row['open']),
-                    'high': clean_float(last_row['high']),
-                    'low': clean_float(last_row['low']),
-                    'close': clean_float(last_row['close']),
-                }
-                if self.chart:
-                    try:
-                        self.chart.update_candle(candle)
-                    except RuntimeError:
-                        # Expected: client disconnected. This fires on every
-                        # poll until the loop is torn down, so it stays silent
-                        # by design rather than by omission.
-                        pass
-
-                self.update_price_label(last_row['close'])
-
-                config = (
-                    self.bot.state.config.copy() if self.bot
-                    else cfg.CURRENT_CONFIG.copy()
-                )
-
-                _strat_path = self.active_strategy_path
-                _strat_json = None
-                if _strat_path:
-                    try:
-                        with open(_strat_path, 'r') as f:
-                            _strat_json = f.read()
-                    except Exception as e:
-                        # Correctness bug when silent: _strat_json stays None, so
-                        # generate_signals() falls back to the DEFAULT strategy's
-                        # rules and the chart draws markers for a strategy the
-                        # user did not select.
-                        _report(f'update_chart_loop: cannot read {_strat_path} — '
-                                f'markers will use default strategy rules', e)
-                        self.log('⚠️ Chart markers using default rules — '
-                                 'active strategy file unreadable')
-
-                def _calc_logic(df, cfg_):
-                    from core.backtester import run_backtest_with_markers
-                    df = add_indicators(df, cfg_)
-                    df = generate_signals(df, cfg_, strategy_json=_strat_json)
-                    return run_backtest_with_markers(df, cfg_, warmup=50)
-
-                new_chunk_markers = await asyncio.to_thread(
-                    _calc_logic, latest_df, config
-                )
-
-                cleaned_markers = [m.copy() for m in new_chunk_markers]
-                if not hasattr(self, 'chart_markers'):
-                    self.chart_markers = []
-
-                if not latest_df.empty:
-                    min_ts = int(latest_df['timestamp'].iloc[0].timestamp())
-                    max_ts = int(latest_df['timestamp'].iloc[-1].timestamp())
-
-                    kept = [
-                        m for m in self.chart_markers
-                        if m['time'] < min_ts or m['time'] > max_ts
-                    ]
-                    kept.extend(cleaned_markers)
-                    self.chart_markers = sorted(kept, key=lambda x: x['time'])
-
-                    if self.chart:
-                        try:
-                            self.chart.set_markers(self.chart_markers)
-                        except RuntimeError:
-                            # Expected: client disconnected — see above.
-                            pass
-
-        except Exception as e:
-            print(f'Update error: {e}')
-            import traceback
-            traceback.print_exc()
-        finally:
-            self.is_updating_chart = False
 
     # ──────────────────────────────────────────────────────────────────────────
     #  Utility
     # ──────────────────────────────────────────────────────────────────────────
 
-    def fetch_and_cache_data(self, symbol, timeframe, limit=5000):
-        safe_symbol = symbol.replace('/', '_')
-        file_path = f'chart_data/{safe_symbol}_{timeframe}.csv'
-        existing_df = pd.DataFrame()
-
-        if os.path.exists(file_path):
-            try:
-                existing_df = pd.read_csv(file_path)
-                existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
-            except Exception as e:
-                # Recoverable (we refetch), but silently losing the cache means
-                # every load refetches thousands of bars — a slow dashboard with
-                # no visible cause.
-                _report(f'fetch_and_cache_data: unreadable cache {file_path}', e)
-
-        if existing_df.empty:
-            new_df = fetch_raw_data(symbol, timeframe, limit)
-        else:
-            fetch_size = min(limit, 1000)
-            new_df = fetch_raw_data(symbol, timeframe, fetch_size)
-
-        if new_df is None or new_df.empty:
-            return existing_df
-
-        if not existing_df.empty:
-            combined = pd.concat([existing_df, new_df])
-            combined = combined.drop_duplicates(subset=['timestamp'], keep='last')
-            combined = combined.sort_values(by='timestamp').reset_index(drop=True)
-            final_df = combined
-        else:
-            final_df = new_df
-
-        try:
-            final_df.to_csv(file_path, index=False)
-        except Exception as e:
-            _report(f'fetch_and_cache_data: cannot write cache {file_path}', e)
-
-        return final_df
 
     def log(self, msg):
         timestamp = datetime.now().strftime('%H:%M:%S')
@@ -723,7 +406,7 @@ class TradingDashboard:
                 self.bot.state.update_config(self.bot.state.config)
             self.log(f'Bot strategy updated to: {name}')
 
-        ran = await self.run_backtest_simulation()
+        ran = await self.chart_panel.run_backtest_simulation()
 
         if ran is False:
             # The backtest was deferred, so chart_markers still belong to the
