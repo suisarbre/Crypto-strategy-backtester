@@ -1,36 +1,33 @@
+"""
+Per-client dashboard view.
+
+One DashboardView is constructed per browser connection and owns that client's
+UI elements. Shared application state lives in gui/state.py.
+
+Previously a single TradingDashboard instance was created at module level and
+`build_ui()` was called on it from inside `@ui.page` — which runs once per
+connection. Every new client overwrote the previous client's element
+references, orphaning it, and three separate workarounds existed to paper over
+the symptoms (a client-id alias check, a load-dedup guard, and refresh-flood
+protection). All three are gone: with one view per client there is nothing to
+guard against. See ADR-005.
+"""
+import asyncio
+import mimetypes
 import os
 import sys
-import json
-import asyncio
-import random
-import time
-import mimetypes
-from datetime import datetime
-
-import pandas as pd
 
 from nicegui import ui, app
+
 import config as cfg
-import strategies as strategies_pkg
 
-# Local Modules
-from data.data_loader import fetch_raw_data
-from analysis.indicators import add_indicators
-from analysis.signals import generate_signals
-
-# Components
+from gui.state import DashboardState, STATE_FIELDS, report as _report
 from gui.components.chart import ChartElement
 from gui.components.console import StreamRedirector, LogElement
 from gui.components.layout import AppLayout
-
-# Panels — behaviour split out of this module; state still lives here (ADR-005)
 from gui.panels.optimization import OptimizationPanel
 from gui.panels.benchmarks import BenchmarksPanel
 from gui.panels.chart_view import ChartPanel
-
-# ==============================================================================
-# 1.  System Configuration
-# ==============================================================================
 
 mimetypes.add_type('application/javascript', '.js')
 
@@ -39,343 +36,160 @@ STATIC_DIR = os.path.join(BASE_DIR, 'static')
 app.add_static_files('/static', STATIC_DIR)
 
 
-def _report(context, exc):
+class DashboardView:
     """
-    Surface a caught exception on the *real* stderr.
+    One browser client's view. Owns UI elements; shared state is delegated.
 
-    Deliberately bypasses sys.stderr: TradingDashboard replaces it with a
-    StreamRedirector that forwards into a client-bound log element, so an error
-    raised while updating the UI would otherwise be swallowed by the very
-    machinery that just failed. Never raises — this is the reporter of last
-    resort.
+    Attribute lookup falls through to the shared DashboardState, and assignment
+    to any name in STATE_FIELDS is routed there rather than shadowed locally.
+    That keeps `view.bot` and `view.chart` reading naturally at every call site
+    while preserving the distinction that actually matters.
     """
-    try:
-        sys.__stderr__.write(f'[Dashboard] {context}: {type(exc).__name__}: {exc}\n')
-        sys.__stderr__.flush()
-    except Exception:
-        pass
 
+    def __init__(self, state):
+        object.__setattr__(self, '_state', state)
 
-# ==============================================================================
-# 2.  Main Dashboard Class
-# ==============================================================================
-
-class TradingDashboard:
-    def __init__(self):
-        self.is_running = False
-        self.client_connected = False
-        self.history_data = []
+        # Per-client UI elements — populated by build_ui() / AppLayout
         self.chart = None
-        self.bot = None
+        self.log_container = None
+        self.log_expansion = None
+        self.layout = None
+        self.update_timer = None
+        self._init_timer = None
+        self.is_updating_chart = False
 
-        # Strategy swap state
-        self.active_strategy_path = None
-        self.active_strategy_name = (
-            cfg.ACTIVE_STRATEGY if hasattr(cfg, 'ACTIVE_STRATEGY') else 'standard'
-        )
-        self.available_strategies = {}
-
-        # Panels own behaviour, not state — see gui/panels/
+        # Panels hold behaviour and bind to this view
         self.optimization = OptimizationPanel(self)
         self.benchmarks = BenchmarksPanel(self)
         self.chart_panel = ChartPanel(self)
 
-        os.makedirs('chart_data', exist_ok=True)
+    # ── state delegation ─────────────────────────────────────────────────────
 
-        # Log redirection
-        if not isinstance(sys.stdout, StreamRedirector):
-            self.original_stdout = sys.stdout
-            self.original_stderr = sys.stderr
-            # quiet=False so the terminal keeps receiving output. With quiet=True
-            # StreamRedirector.write() never forwarded to the real stream, so
-            # importing this module silenced print() process-wide until a browser
-            # client connected — which made the dashboard impossible to
-            # print-debug, and also swallowed monitor_position's live status line.
-            sys.stdout = StreamRedirector(sys.stdout, self._handle_stream_message, quiet=False)
-            sys.stderr = StreamRedirector(sys.stderr, self._handle_stream_message, quiet=False)
+    def __getattr__(self, name):
+        # Only reached when `name` isn't an instance attribute.
+        try:
+            return getattr(self._state, name)
+        except AttributeError:
+            raise AttributeError(
+                f'{type(self).__name__!r} has no attribute {name!r}, '
+                f'and neither does the shared DashboardState'
+            ) from None
+
+    def __setattr__(self, name, value):
+        if name in STATE_FIELDS:
+            setattr(self._state, name, value)
         else:
-            sys.stdout.callback = self._handle_stream_message
-            sys.stderr.callback = self._handle_stream_message
+            object.__setattr__(self, name, value)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Stream → UI bridge
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── logging ──────────────────────────────────────────────────────────────
 
-    def _handle_stream_message(self, msg):
-        if not msg.strip():
-            return
-        if 'Candle Close' in msg:
-            return
-        if msg.startswith('\r'):
-            return
-        if getattr(self, 'client_connected', False):
-            try:
-                if hasattr(self, 'log_container') and self.log_container:
-                    self.log_container.push(msg.strip())
-            except Exception as e:
-                # Reached from PaperTrader worker threads via the stdout hijack,
-                # i.e. with no client context. Reported, not raised: this runs
-                # inside a write() and must never break the caller's print().
-                _report('_handle_stream_message: log push failed', e)
+    def log(self, msg):
+        """Delegate to shared state, which broadcasts to every live view."""
+        self._state.log(msg)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Lifecycle
-    # ──────────────────────────────────────────────────────────────────────────
+    def push_log(self, formatted):
+        """Called by DashboardState — render one line into this client's panel."""
+        if self.log_container:
+            self.log_container.push(formatted)
 
-    def set_bot(self, bot):
-        self.bot = bot
-        self.log('[OK] Bot instance attached')
-        self.interval_minutes = 5
-        self.next_candle_time = 0
-        self._sync_timeframe_state()
-        app.on_startup(lambda: asyncio.create_task(self.run_background_loop()))
+    def _clear_logs(self):
+        if self.log_container:
+            self.log_container.clear()
+
+    # ── lifecycle ────────────────────────────────────────────────────────────
 
     async def on_page_load(self):
         try:
-            if (
-                not hasattr(self, 'log_container')
-                or self.log_container.client.id != ui.context.client.id
-            ):
-                return
-
-            # Skip if we already loaded for this client session
-            current_client_id = ui.context.client.id
-            if getattr(self, '_last_loaded_client', None) == current_client_id:
-                return
-            self._last_loaded_client = current_client_id
-
-            # ── Flood protection: if the page loads too often, skip auto-init
-            #    to break an infinite refresh loop. ──
-            now = time.time()
-            if not hasattr(self, '_page_load_times'):
-                self._page_load_times = []
-            self._page_load_times.append(now)
-            # Keep only loads within the last 30 seconds
-            self._page_load_times = [t for t in self._page_load_times if now - t < 30]
-            if len(self._page_load_times) > 3:
-                print(f'[Dashboard] Page loaded {len(self._page_load_times)}× in 30s — '
-                      f'skipping auto-init to break refresh loop')
-                self.client_connected = True
-                return
-
-            # ── Reset stale backtest_running flag from a crashed/interrupted run ──
-            if getattr(self, '_backtest_running', False):
-                elapsed = now - getattr(self, '_backtest_start_time', 0)
-                if elapsed > 120:  # 2 minutes → definitely stale
-                    print('[Dashboard] Resetting stale _backtest_running flag')
-                    self._backtest_running = False
-                    self._backtest_pending = False
-
-            self.client_connected = True
             await asyncio.sleep(0.5)
             await self.chart_panel.init_chart()
         except Exception as e:
-            print(f'Error in on_page_load: {e}')
+            _report('on_page_load', e)
 
-    async def run_background_loop(self):
-        while True:
+    def dispose(self):
+        self._state.detach(self)
+        for timer in (self.update_timer, self._init_timer):
             try:
-                if self.is_running:
-                    self._trading_loop()
+                if timer:
+                    timer.cancel()
             except Exception as e:
-                print(f'Background loop error: {e}')
-            await asyncio.sleep(cfg.BACKGROUND_LOOP_INTERVAL_SEC)
+                _report('dispose: timer cancel failed', e)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  UI Construction
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── UI construction ──────────────────────────────────────────────────────
 
     def build_ui(self):
-        # Static files
-        app.add_static_files('/static', 'static')
         ui.add_head_html('<script src="/static/lightweight-charts.js?v=5.1.0"></script>')
         ui.add_head_html('<script src="/static/js/chart_controller.js?v=5.1.0"></script>')
 
-        # Layout shell (header + sidebar with strategy/chart tools)
         self.layout = AppLayout(self)
 
-        # ══════════════════════════════════════════════════════════════════════
-        #  MAIN CONTENT AREA
-        # ══════════════════════════════════════════════════════════════════════
         with ui.column().classes('w-full p-4 gap-3 no-wrap') \
                 .style('height: calc(100vh - 50px); background: #0a0e17;'):
 
-            # ── KPI Cards Row ──
-            with ui.row().classes('w-full gap-3 no-wrap items-stretch') \
-                    .style('flex-shrink: 0;'):
+            with ui.row().classes('w-full gap-3 no-wrap items-stretch').style('flex-shrink: 0;'):
                 self._build_kpi_card('SYMBOL', cfg.SYMBOL, icon='currency_bitcoin', color='#3b82f6')
                 self._build_kpi_card('TIMEFRAME', cfg.TIMEFRAME, icon='schedule', color='#8b5cf6')
-                self._kpi_leverage = self._build_kpi_card('LEVERAGE', f'{cfg.DEFAULT_LEVERAGE}x', icon='speed', color='#f59e0b')
-                self._kpi_trades = self._build_kpi_card('TRADES', '0', icon='swap_vert', color='#10b981')
-                self._kpi_pnl = self._build_kpi_card('SESSION P&L', '$0.00', icon='trending_up', color='#06b6d4')
+                self._kpi_leverage = self._build_kpi_card(
+                    'LEVERAGE', f'{cfg.DEFAULT_LEVERAGE}x', icon='speed', color='#f59e0b')
+                self._kpi_trades = self._build_kpi_card(
+                    'TRADES', '0', icon='swap_vert', color='#10b981')
+                self._kpi_pnl = self._build_kpi_card(
+                    'SESSION P&L', '$0.00', icon='trending_up', color='#06b6d4')
 
-            # ── Chart (takes ALL remaining vertical space) ──
             with ui.card().classes('w-full p-0 overflow-hidden chart-container') \
                     .style('flex: 1 1 0; min-height: 0;'):
                 self.chart = ChartElement()
 
-            # ── Activity Log (collapsible — closed by default) ──
             with ui.card().classes('w-full p-0 log-panel').style('flex-shrink: 0;'):
                 with ui.expansion('Activity Log', icon='terminal') \
                         .classes('w-full log-expansion') \
                         .props('dense header-class="text-gray-500"') as self.log_expansion:
-                    self.log_expansion.value = False  # collapsed by default
+                    self.log_expansion.value = False
                     self.log_container = LogElement()
 
-            # ── Bottom Action Bar ──
-            with ui.element('div').classes('w-full action-bar').style('flex-shrink: 0;'):
-                with ui.row().classes('w-full items-center gap-3 no-wrap justify-center'):
-                    self.btn_start = (
-                        ui.button('Start', on_click=self.start_bot)
-                        .props('unelevated icon=play_arrow')
-                        .classes('btn-modern btn-success text-white px-6')
-                    )
-                    self.btn_stop = (
-                        ui.button('Stop', on_click=self.stop_bot)
-                        .props('unelevated icon=stop')
-                        .classes('btn-modern btn-danger text-white px-6')
-                    )
+            self._build_action_bar()
 
-                    # Vertical divider
-                    ui.element('div').style('width:1px;height:28px;background:#1e293b;')
-
-                    self.btn_optimize = (
-                        ui.button('Optimize', on_click=self.optimization.run_manual_optimization)
-                        .props('unelevated icon=tune')
-                        .classes('btn-modern btn-primary text-white px-5')
-                    )
-                    self.btn_manual_close = (
-                        ui.button('Manual Close', on_click=self.trigger_manual_close)
-                        .props('unelevated icon=exit_to_app')
-                        .classes('btn-modern btn-warning text-white px-5')
-                    )
-
-                    ui.element('div').style('width:1px;height:28px;background:#1e293b;')
-
-                    self.btn_kill = (
-                        ui.button('Kill Switch', on_click=self.trigger_kill_switch)
-                        .props('unelevated icon=dangerous')
-                        .classes('btn-modern btn-danger text-white px-5')
-                    )
-
-        # Status update loop
+        self._state.attach(self)
         self.update_status_continuously()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  KPI Card Builder
-    # ──────────────────────────────────────────────────────────────────────────
+    def _build_action_bar(self):
+        buttons = [
+            ('Start', 'play_arrow', 'btn-success', 'px-6', self.start_bot),
+            ('Stop', 'stop', 'btn-danger', 'px-6', self.stop_bot),
+            None,
+            ('Optimize', 'tune', 'btn-primary', 'px-5', self.optimization.run_manual_optimization),
+            ('Manual Close', 'exit_to_app', 'btn-warning', 'px-5', self.trigger_manual_close),
+            None,
+            ('Kill Switch', 'dangerous', 'btn-danger', 'px-5', self.trigger_kill_switch),
+        ]
+        with ui.element('div').classes('w-full action-bar').style('flex-shrink: 0;'):
+            with ui.row().classes('w-full items-center gap-3 no-wrap justify-center'):
+                for spec in buttons:
+                    if spec is None:
+                        ui.element('div').style('width:1px;height:28px;background:#1e293b;')
+                        continue
+                    label, icon, style_cls, pad, handler = spec
+                    ui.button(label, on_click=handler) \
+                        .props(f'unelevated icon={icon}') \
+                        .classes(f'btn-modern {style_cls} text-white {pad}')
 
     def _build_kpi_card(self, title, value, *, icon='info', color='#3b82f6'):
         with ui.element('div').classes('kpi-card flex-1'):
             with ui.row().classes('items-center gap-2 no-wrap'):
                 ui.icon(icon, size='16px').style(f'color:{color};opacity:0.8;')
-                ui.label(title).classes('text-[10px] font-bold tracking-widest text-gray-500 uppercase')
-            value_label = ui.label(value).classes('text-lg font-bold font-mono text-white mt-1')
-        return value_label
+                ui.label(title).classes(
+                    'text-[10px] font-bold tracking-widest text-gray-500 uppercase')
+            return ui.label(value).classes('text-lg font-bold font-mono text-white mt-1')
 
-    def _clear_logs(self):
-        if hasattr(self, 'log_container') and self.log_container:
-            self.log_container.clear()
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Benchmark Panel Builder
-    # ──────────────────────────────────────────────────────────────────────────
-
-
-
-
-    # ── Helper: single benchmark metric row ──
-
-    # ── Helper: comparison bar ──
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Optimization Panel
-    # ──────────────────────────────────────────────────────────────────────────
-
-
-
-
-
-
-
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Fine-Tune: Local Search Around Best Result
-    # ──────────────────────────────────────────────────────────────────────────
-
-
-
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Chart Control
-    # ──────────────────────────────────────────────────────────────────────────
-
-
-
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Utility
-    # ──────────────────────────────────────────────────────────────────────────
-
-
-    def log(self, msg):
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        formatted = f'[{timestamp}] {msg}'
-        # Push directly to the log container (bypasses stdout redirect timing)
-        try:
-            if hasattr(self, 'log_container') and self.log_container:
-                self.log_container.push(formatted)
-        except Exception as e:
-            _report('log: push to log_container failed', e)
-        # Also write to real stdout for terminal visibility
-        try:
-            if hasattr(self, 'original_stdout'):
-                self.original_stdout.write(formatted + '\n')
-                self.original_stdout.flush()
-            else:
-                sys.__stdout__.write(formatted + '\n')
-                sys.__stdout__.flush()
-        except Exception:
-            # Reporter of last resort: stdout itself is gone. Reporting here
-            # would recurse into the same failure. Stay silent deliberately.
-            pass
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Strategy Management
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── strategy management ──────────────────────────────────────────────────
 
     def _discover_strategies(self):
-        """
-        {key: json_path}, delegated to strategies.discover_strategies().
-
-        This used to key on the JSON's lowercased 'strategy_name' ("Regime Rider"
-        -> 'regime rider') while STRATEGY_MAP keyed on short identifiers, so two of
-        four shipped strategies never resolved. Discovery now lives in exactly one
-        place so the two sides cannot drift apart again (ADR-001).
-        """
-        return strategies_pkg.discover_strategies()
+        return self._state.discover_strategies()
 
     def _strategy_options(self):
-        """{key: display label} for the selector — keys stay canonical."""
-        return {
-            key: strategies_pkg.display_name(key)
-            for key in self._discover_strategies()
-        }
+        return self._state.strategy_options()
 
     def _get_strategy_info(self, path):
-        try:
-            with open(path, 'r') as f:
-                data = json.load(f)
-            return (
-                data.get('strategy_name', 'Unknown'),
-                data.get('version', '?'),
-                data.get('comment', ''),
-            )
-        except Exception as e:
-            # This is where a stray "Active: Unknown v?" in the sidebar comes
-            # from — previously with no indication of why.
-            _report(f'_get_strategy_info: cannot read {path}', e)
-            return ('Unknown', '?', '')
+        return self._state.strategy_info(path)
 
     async def _apply_strategy(self):
         selected = self.strategy_select.value
@@ -409,35 +223,31 @@ class TradingDashboard:
         ran = await self.chart_panel.run_backtest_simulation()
 
         if ran is False:
-            # The backtest was deferred, so chart_markers still belong to the
-            # PREVIOUS strategy. Showing their counts here labelled them as the
-            # newly selected strategy's results.
+            # Deferred: chart_markers still belong to the PREVIOUS strategy, so
+            # reporting their counts here would label them as this one's.
             self.strat_stats_label.text = 'Stats: pending…'
             return
 
-        if hasattr(self, 'chart_markers') and self.chart_markers:
-            # Signal markers have 'Buy'/'Sell' text; trade markers have LONG/SHORT/TP/SL etc.
-            n_signals = sum(
-                1 for m in self.chart_markers
-                if m.get('text', '') in ('Buy', 'Sell')
-            )
-            n_entries = sum(
-                1 for m in self.chart_markers
-                if 'LONG' in m.get('text', '') or 'SHORT' in m.get('text', '')
-            )
-            n_exits = sum(
-                1 for m in self.chart_markers
-                if any(k in m.get('text', '') for k in ['TP', 'SL', 'TS', 'Exit', 'BE', 'TrendEnd'])
-            )
-            self.strat_stats_label.text = (
-                f'{n_signals} signals · {n_entries} entries · {n_exits} exits'
-            )
-
+        self._update_strategy_stats()
         self.log(f'Strategy swap complete: {name}')
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Bot Controls
-    # ──────────────────────────────────────────────────────────────────────────
+    def _update_strategy_stats(self):
+        markers = self.chart_markers or []
+        if not markers:
+            return
+
+        def count(pred):
+            return sum(1 for m in markers if pred(m.get('text', '')))
+
+        exits = ('TP', 'SL', 'TS', 'Exit', 'BE', 'TrendEnd')
+        n_signals = count(lambda t: t in ('Buy', 'Sell'))
+        n_entries = count(lambda t: 'LONG' in t or 'SHORT' in t)
+        n_exits = count(lambda t: any(k in t for k in exits))
+
+        self.strat_stats_label.text = (
+            f'{n_signals} signals · {n_entries} entries · {n_exits} exits')
+
+    # ── bot controls ─────────────────────────────────────────────────────────
 
     def start_bot(self):
         self.is_running = True
@@ -453,7 +263,6 @@ class TradingDashboard:
         ui.notify('Trading stopped', type='negative', position='bottom-right')
         self.log('⏹️ Bot stopped')
 
-
     def trigger_manual_close(self):
         if self.bot:
             self.bot.manual_close()
@@ -464,7 +273,6 @@ class TradingDashboard:
             self.bot.kill_switch()
             ui.notify('Kill switch activated!', type='negative', position='top')
             self.log('☠️ Kill switch triggered!')
-
 
     def shutdown_app(self):
         self.log('🛑 Shutdown initiated…')
@@ -479,60 +287,7 @@ class TradingDashboard:
 
         asyncio.create_task(_shutdown())
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  Status & Price Updates
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def update_price_label(self, price):
-        self.price_label.text = f'{price:,.2f} USDT'
-        if len(self.history_data) > 1:
-            prev = self.history_data[-2]['close']
-            color = 'text-green-400' if price >= prev else 'text-red-400'
-            self.price_label.classes(color, remove='text-green-400 text-red-400')
-
-        if self.bot:
-            state = self.bot.state
-            bal = state.balance
-            start_bal = getattr(cfg, 'START_BALANCE', 100.0)
-
-            # ── Compute unrealized PnL if position is open ──
-            unrealized = 0.0
-            if state.position != 0 and state.avg_entry > 0 and price > 0:
-                if state.position == 1:
-                    raw_pnl = (price - state.avg_entry) / state.avg_entry
-                else:
-                    raw_pnl = (state.avg_entry - price) / state.avg_entry
-                lev_pnl = raw_pnl * state.entry_leverage
-                # After partial exit, only 50% of balance is at risk
-                ratio = 0.5 if state.partial_done else 1.0
-                unrealized = bal * ratio * lev_pnl
-
-            equity = bal + unrealized   # dynamic equity
-            roi = ((equity - start_bal) / start_bal) * 100
-            sign = '+' if roi >= 0 else ''
-
-            # ── Balance label: show equity (confirmed + unrealized) ──
-            if state.position != 0:
-                self.balance_label.text = (
-                    f'${equity:,.2f} ({sign}{roi:.2f}%)  '
-                    f'[unrl: {"+" if unrealized >= 0 else ""}${unrealized:,.2f}]'
-                )
-            else:
-                self.balance_label.text = f'${bal:,.2f} ({sign}{roi:.2f}%)'
-
-            roi_color = 'text-green-400' if roi >= 0 else 'text-red-400'
-            self.balance_label.classes(
-                roi_color, remove='text-green-400 text-red-400 text-gray-300'
-            )
-
-            # ── SESSION P&L KPI: equity-based (includes unrealized) ──
-            if hasattr(self, '_kpi_pnl'):
-                pnl = equity - start_bal
-                self._kpi_pnl.text = f'{"+" if pnl >= 0 else ""}${pnl:,.2f}'
-                pnl_color = 'text-green-400' if pnl >= 0 else 'text-red-400'
-                self._kpi_pnl.classes(
-                    pnl_color, remove='text-green-400 text-red-400 text-white'
-                )
+    # ── status & price ───────────────────────────────────────────────────────
 
     def update_status_continuously(self):
         ui.timer(1.0, self._sync_status)
@@ -542,79 +297,83 @@ class TradingDashboard:
             return
 
         if not self.is_running:
-            self.status_label.text = 'STOPPED'
-            self.status_label.classes(
-                'status-stopped',
-                remove='status-running status-paused status-killed',
-            )
-            return
-
-        if self.bot.state.is_manual_stop:
-            self.status_label.text = 'KILLED'
-            self.status_label.classes(
-                'status-killed',
-                remove='status-running status-paused status-stopped',
-            )
+            label, cls = 'STOPPED', 'status-stopped'
+        elif self.bot.state.is_manual_stop:
+            label, cls = 'KILLED', 'status-killed'
         elif self.bot.state.is_paused:
-            self.status_label.text = 'PAUSED'
-            self.status_label.classes(
-                'status-paused',
-                remove='status-running status-stopped status-killed',
-            )
+            label, cls = 'PAUSED', 'status-paused'
         else:
-            self.status_label.text = 'RUNNING'
-            self.status_label.classes(
-                'status-running',
-                remove='status-stopped status-paused status-killed',
-            )
+            label, cls = 'RUNNING', 'status-running'
+
+        all_cls = {'status-stopped', 'status-running', 'status-paused', 'status-killed'}
+        self.status_label.text = label
+        self.status_label.classes(cls, remove=' '.join(all_cls - {cls}))
 
     def _sync_timeframe_state(self):
-        if not self.bot:
-            return
-        active_tf = self.bot.state.get_active_timeframe()
-        from utils import parse_timeframe_to_minutes, get_next_candle_time
-
-        minutes = parse_timeframe_to_minutes(active_tf)
-        if minutes != self.interval_minutes or self.next_candle_time == 0:
-            self.interval_minutes = minutes
-            self.next_candle_time = get_next_candle_time(self.interval_minutes)
+        self._state.sync_timeframe()
 
     def _trading_loop(self):
-        if not self.bot or not self.is_running:
+        self._state.trading_loop()
+
+    def update_price_label(self, price):
+        self.price_label.text = f'{price:,.2f} USDT'
+        if len(self.history_data) > 1:
+            prev = self.history_data[-2]['close']
+            color = 'text-green-400' if price >= prev else 'text-red-400'
+            self.price_label.classes(color, remove='text-green-400 text-red-400')
+
+        if not self.bot:
             return
 
-        active_tf = self.bot.state.get_active_timeframe()
-        from utils import parse_timeframe_to_minutes
+        state = self.bot.state
+        start_bal = getattr(cfg, 'START_BALANCE', 100.0)
+        equity = state.equity(price) if price > 0 else state.balance
+        unrealized = equity - state.balance
 
-        active_minutes = parse_timeframe_to_minutes(active_tf)
-        if active_minutes != self.interval_minutes:
-            self.log(f'🔄 Timeframe changed: {active_tf}')
-            self._sync_timeframe_state()
+        roi = ((equity - start_bal) / start_bal) * 100 if start_bal else 0.0
+        sign = '+' if roi >= 0 else ''
 
-        now = datetime.now().timestamp()
-        if now >= self.next_candle_time:
-            self.log('⚡ Executing trade job…')
-            try:
-                self.bot.trade_job()
-            except Exception as e:
-                self.log(f'❌ Trade job error: {e}')
-            self.next_candle_time += self.interval_minutes * 60
+        if state.position != 0:
+            self.balance_label.text = (
+                f'${equity:,.2f} ({sign}{roi:.2f}%)  '
+                f'[unrl: {"+" if unrealized >= 0 else ""}${unrealized:,.2f}]')
+        else:
+            self.balance_label.text = f'${state.balance:,.2f} ({sign}{roi:.2f}%)'
 
-        import schedule
-        schedule.run_pending()
+        roi_color = 'text-green-400' if roi >= 0 else 'text-red-400'
+        self.balance_label.classes(
+            roi_color, remove='text-green-400 text-red-400 text-gray-300')
+
+        if getattr(self, '_kpi_pnl', None):
+            pnl = equity - start_bal
+            self._kpi_pnl.text = f'{"+" if pnl >= 0 else ""}${pnl:,.2f}'
+            pnl_color = 'text-green-400' if pnl >= 0 else 'text-red-400'
+            self._kpi_pnl.classes(pnl_color, remove='text-green-400 text-red-400 text-white')
 
 
 # ==============================================================================
-# 4.  Entry Point
+#  Entry point
 # ==============================================================================
 
-dashboard = TradingDashboard()
+#: Shared across all clients. `cli.py` calls set_bot() on this.
+dashboard = DashboardState()
+
+# Capture stdout/stderr once, at import, and fan writes out to every live view.
+# quiet=False so the terminal keeps receiving output — quiet=True silenced
+# print() process-wide until a browser connected.
+if not isinstance(sys.stdout, StreamRedirector):
+    sys.stdout = StreamRedirector(sys.stdout, dashboard.handle_stream_message, quiet=False)
+    sys.stderr = StreamRedirector(sys.stderr, dashboard.handle_stream_message, quiet=False)
+
+os.makedirs('chart_data', exist_ok=True)
 
 
 @ui.page('/')
 async def index():
-    dashboard.build_ui()
-    ui.timer(0.1, dashboard.on_page_load, once=True)
+    view = DashboardView(dashboard)
+    view.build_ui()
+    ui.context.client.on_disconnect(view.dispose)
+    ui.timer(0.1, view.on_page_load, once=True)
 
 
 if __name__ in {'__main__', '__mp_main__'}:
@@ -623,7 +382,6 @@ if __name__ in {'__main__', '__mp_main__'}:
 
     print('⚠️ Running in Standalone Mode — attaching PaperTrader…')
     utils.apply_patches()
-    bot = PaperTrader()
-    dashboard.set_bot(bot)
+    dashboard.set_bot(PaperTrader())
 
     ui.run(title='TradeBot Dashboard', dark=True, port=8080)

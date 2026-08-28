@@ -14,6 +14,7 @@ import pandas as pd
 from nicegui import ui
 
 import config as cfg
+from gui.state import report as _report
 from data.data_loader import fetch_raw_data
 from gui.panels.chart_data import build_chart_payload
 

@@ -17,6 +17,7 @@ import pandas as pd
 from nicegui import ui
 
 import config as cfg
+from gui.state import report as _report
 import strategies as strategies_pkg
 from data.data_loader import fetch_raw_data
 from analysis.indicators import add_indicators
