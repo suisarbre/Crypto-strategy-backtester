@@ -508,7 +508,7 @@ class AppLayout:
             # ── Optimization ──
             ui.label('OPTIMIZATION').classes('section-label')
             with ui.column().classes('w-full gap-2'):
-                ui.button('Optimize Strategy', on_click=self.dashboard.open_optimization_dialog) \
+                ui.button('Optimize Strategy', on_click=self.dashboard.optimization.open_optimization_dialog) \
                     .props('unelevated icon=tune') \
                     .classes('w-full btn-modern btn-primary text-white')
 
