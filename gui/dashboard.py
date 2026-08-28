@@ -4,7 +4,6 @@ import json
 import asyncio
 import random
 import time
-import glob
 import mimetypes
 from datetime import datetime
 
@@ -12,6 +11,7 @@ import pandas as pd
 
 from nicegui import ui, app
 import config as cfg
+import strategies as strategies_pkg
 
 # Local Modules
 from data.data_loader import fetch_raw_data
@@ -32,6 +32,23 @@ mimetypes.add_type('application/javascript', '.js')
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 app.add_static_files('/static', STATIC_DIR)
+
+
+def _report(context, exc):
+    """
+    Surface a caught exception on the *real* stderr.
+
+    Deliberately bypasses sys.stderr: TradingDashboard replaces it with a
+    StreamRedirector that forwards into a client-bound log element, so an error
+    raised while updating the UI would otherwise be swallowed by the very
+    machinery that just failed. Never raises — this is the reporter of last
+    resort.
+    """
+    try:
+        sys.__stderr__.write(f'[Dashboard] {context}: {type(exc).__name__}: {exc}\n')
+        sys.__stderr__.flush()
+    except Exception:
+        pass
 
 
 # ==============================================================================
@@ -59,7 +76,12 @@ class TradingDashboard:
         if not isinstance(sys.stdout, StreamRedirector):
             self.original_stdout = sys.stdout
             self.original_stderr = sys.stderr
-            sys.stdout = StreamRedirector(sys.stdout, self._handle_stream_message, quiet=True)
+            # quiet=False so the terminal keeps receiving output. With quiet=True
+            # StreamRedirector.write() never forwarded to the real stream, so
+            # importing this module silenced print() process-wide until a browser
+            # client connected — which made the dashboard impossible to
+            # print-debug, and also swallowed monitor_position's live status line.
+            sys.stdout = StreamRedirector(sys.stdout, self._handle_stream_message, quiet=False)
             sys.stderr = StreamRedirector(sys.stderr, self._handle_stream_message, quiet=False)
         else:
             sys.stdout.callback = self._handle_stream_message
@@ -80,8 +102,11 @@ class TradingDashboard:
             try:
                 if hasattr(self, 'log_container') and self.log_container:
                     self.log_container.push(msg.strip())
-            except Exception:
-                pass
+            except Exception as e:
+                # Reached from PaperTrader worker threads via the stdout hijack,
+                # i.e. with no client context. Reported, not raised: this runs
+                # inside a write() and must never break the caller's print().
+                _report('_handle_stream_message: log push failed', e)
 
     # ──────────────────────────────────────────────────────────────────────────
     #  Lifecycle
@@ -283,18 +308,38 @@ class TradingDashboard:
                 leverage, start_bal, sl_ratio, sl_mult, tp_ratio, fee_rate,
             )
         except ImportError:
-            return None, None
+            # Fall back to the Python backtester rather than returning nothing.
+            # Requiring the C++ build here left the benchmark drawer permanently
+            # empty for anyone who had not run `setup.py build_ext`, which read
+            # as "the benchmark button does not work".
+            from core.backtester import run_deep_backtest
+            balance, wins, trades, mdd, _ = run_deep_backtest(df, config)
+            res = {
+                'balance': balance,
+                'wins': wins,
+                'trades': trades,
+                'mdd': mdd,
+                'total_return': (balance - start_bal) / start_bal if start_bal else 0.0,
+                # Risk-adjusted ratios come from the C++ engine only.
+                'sortino': None,
+                'calmar': None,
+                'profit_factor': None,
+            }
+
+        def _pct(v):
+            return v * 100 if v is not None else None
 
         strategy = {
-            'total_return': res.get('total_return', 0.0) * 100,  # → percent
+            'total_return': _pct(res.get('total_return', 0.0)),
             'sortino':       res.get('sortino', 0.0),
             'calmar':        res.get('calmar', 0.0),
             'profit_factor': res.get('profit_factor', 0.0),
-            'mdd':           res.get('mdd', 0.0) * 100,          # → percent
+            'mdd':           _pct(res.get('mdd', 0.0)),
             'trades':        res.get('trades', 0),
             'wins':          res.get('wins', 0),
             'win_rate':      (res['wins'] / res['trades'] * 100) if res.get('trades', 0) > 0 else 0.0,
             'balance':       res.get('balance', start_bal),
+            'engine':        'cpp' if res.get('sortino') is not None else 'python',
         }
 
         # Buy-and-Hold baseline
@@ -356,14 +401,23 @@ class TradingDashboard:
             # ── Section: Strategy Performance ──
             ui.label('STRATEGY PERFORMANCE').classes('bench-header')
 
+            # Ratios are C++-engine only; show why they're absent rather than
+            # rendering a misleading 0.000.
+            cpp_only = strategy.get('engine') != 'cpp'
+
+            def _ratio(value, fmt):
+                return 'n/a' if value is None else format(value, fmt)
+
+            ratio_sub = 'needs C++ engine' if cpp_only else None
+
             self._bench_row('Total Return', f'{strategy["total_return"]:+.2f}%',
                             color='#10b981' if strategy['total_return'] >= 0 else '#ef4444')
-            self._bench_row('Sortino Ratio', f'{strategy["sortino"]:.3f}',
-                            sub='risk-adjusted return', color='#3b82f6')
-            self._bench_row('Calmar Ratio', f'{strategy["calmar"]:.3f}',
-                            sub='return / max DD', color='#8b5cf6')
-            self._bench_row('Profit Factor', f'{strategy["profit_factor"]:.2f}',
-                            sub='gross P / gross L', color='#f59e0b')
+            self._bench_row('Sortino Ratio', _ratio(strategy['sortino'], '.3f'),
+                            sub=ratio_sub or 'risk-adjusted return', color='#3b82f6')
+            self._bench_row('Calmar Ratio', _ratio(strategy['calmar'], '.3f'),
+                            sub=ratio_sub or 'return / max DD', color='#8b5cf6')
+            self._bench_row('Profit Factor', _ratio(strategy['profit_factor'], '.2f'),
+                            sub=ratio_sub or 'gross P / gross L', color='#f59e0b')
             self._bench_row('Max Drawdown', f'{strategy["mdd"]:.2f}%',
                             color='#ef4444')
             self._bench_row('Win Rate', f'{strategy["win_rate"]:.1f}%',
@@ -479,7 +533,11 @@ class TradingDashboard:
         try:
             with open(strat_path, 'r') as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as e:
+            # Silently returning [] here renders an empty optimize panel with no
+            # explanation — a malformed strategy JSON looked like a broken UI.
+            _report(f'_extract_tunable_params: cannot read {strat_path}', e)
+            self.log(f'⚠️ Could not read strategy file: {os.path.basename(str(strat_path))}')
             return []
 
         params = []
@@ -1283,10 +1341,16 @@ class TradingDashboard:
             ui.notify(f'✅ Saved as "{new_name}"', type='positive', position='bottom-right')
             self.log(f'✅ New strategy saved: {new_path}')
 
-            # Refresh strategy list in sidebar
+            # Refresh strategy list in sidebar.
+            # Must stay a {key: label} dict to match how the selector is built —
+            # assigning a bare key list here replaced the display names with raw
+            # filename stems, and ChoiceElement._update_options() nulls the
+            # current value whenever it is missing from the rebuilt key list.
             self.available_strategies = self._discover_strategies()
-            self.strategy_select.options = list(self.available_strategies.keys())
-            self.strategy_select.update()
+            self.strategy_select.set_options(
+                self._strategy_options(),
+                value=self.active_strategy_name,
+            )
 
         # Refresh chart
         if self._optim_dialog:
@@ -1301,7 +1365,11 @@ class TradingDashboard:
         try:
             with open(path, 'r') as f:
                 data = json.load(f)
-        except Exception:
+        except Exception as e:
+            # Returning silently meant "Apply optimized params" reported success
+            # while writing nothing at all.
+            _report(f'_update_strategy_json: cannot read {path}', e)
+            self.log(f'❌ Could not apply params — unreadable strategy file: {path}')
             return
 
         # Update indicator params (string-referenced lengths)
@@ -1341,7 +1409,11 @@ class TradingDashboard:
         # ── Guard: prevent concurrent / re-entrant runs ──
         if getattr(self, '_backtest_running', False):
             self._backtest_pending = True          # single dedup'd retry
-            return
+            # A full load takes ~20s, so this window is wide: clicking
+            # "Apply & Preview" during one silently left the previous strategy's
+            # chart on screen, which read as the swap being ignored.
+            self.log('⏳ A load is already running — queued; chart will refresh when it finishes')
+            return False
         self._backtest_running = True
         self._backtest_pending = False
         self._backtest_start_time = time.time()
@@ -1350,8 +1422,8 @@ class TradingDashboard:
         if hasattr(self, 'update_timer') and self.update_timer:
             try:
                 self.update_timer.cancel()
-            except Exception:
-                pass
+            except Exception as e:
+                _report('run_backtest_simulation: could not cancel chart timer', e)
             self.update_timer = None
 
         try:
@@ -1389,7 +1461,11 @@ class TradingDashboard:
                 signal_markers = generate_signal_markers(df, warmup=50)
 
                 # ── Build chart_data using vectorized ops (NOT iterrows) ──
-                timestamps = df['timestamp'].astype('int64') // 10**9  # ns → s
+                # Resolution-independent: pandas 2+ gives datetime64[ms] here and
+                # datetime64[us] via the CSV cache, so a hardcoded //10**9 is off
+                # by 10**3–10**6 and lands every candle in 1970.
+                from utils import to_epoch_seconds
+                timestamps = to_epoch_seconds(df['timestamp'])
                 opens  = df['open'].values
                 highs  = df['high'].values
                 lows   = df['low'].values
@@ -1473,13 +1549,15 @@ class TradingDashboard:
                 )
                 if strat_m and base_m:
                     self._populate_benchmarks(strat_m, base_m)  # UI update — must run on main loop
+                    sortino = strat_m['sortino']
+                    sortino_txt = f'{sortino:.2f}' if sortino is not None else 'n/a (no C++ engine)'
                     self.log(
                         f'📊 Benchmarks: Return {strat_m["total_return"]:+.2f}% '
                         f'| α {strat_m["total_return"] - base_m["buy_hold_return"]:+.2f}% '
-                        f'| Sortino {strat_m["sortino"]:.2f}'
+                        f'| Sortino {sortino_txt}'
                     )
                 else:
-                    self.log('⚠️ Benchmark computation returned no data (cpp_engine not available?)')
+                    self.log('⚠️ Benchmark computation returned no data')
             except Exception as e:
                 self.log(f'⚠️ Benchmark computation skipped: {e}')
 
@@ -1534,6 +1612,9 @@ class TradingDashboard:
                     try:
                         self.chart.update_candle(candle)
                     except RuntimeError:
+                        # Expected: client disconnected. This fires on every
+                        # poll until the loop is torn down, so it stays silent
+                        # by design rather than by omission.
                         pass
 
                 self.update_price_label(last_row['close'])
@@ -1549,8 +1630,15 @@ class TradingDashboard:
                     try:
                         with open(_strat_path, 'r') as f:
                             _strat_json = f.read()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # Correctness bug when silent: _strat_json stays None, so
+                        # generate_signals() falls back to the DEFAULT strategy's
+                        # rules and the chart draws markers for a strategy the
+                        # user did not select.
+                        _report(f'update_chart_loop: cannot read {_strat_path} — '
+                                f'markers will use default strategy rules', e)
+                        self.log('⚠️ Chart markers using default rules — '
+                                 'active strategy file unreadable')
 
                 def _calc_logic(df, cfg_):
                     from core.backtester import run_backtest_with_markers
@@ -1581,6 +1669,7 @@ class TradingDashboard:
                         try:
                             self.chart.set_markers(self.chart_markers)
                         except RuntimeError:
+                            # Expected: client disconnected — see above.
                             pass
 
         except Exception as e:
@@ -1603,8 +1692,11 @@ class TradingDashboard:
             try:
                 existing_df = pd.read_csv(file_path)
                 existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
-            except Exception:
-                pass
+            except Exception as e:
+                # Recoverable (we refetch), but silently losing the cache means
+                # every load refetches thousands of bars — a slow dashboard with
+                # no visible cause.
+                _report(f'fetch_and_cache_data: unreadable cache {file_path}', e)
 
         if existing_df.empty:
             new_df = fetch_raw_data(symbol, timeframe, limit)
@@ -1625,8 +1717,8 @@ class TradingDashboard:
 
         try:
             final_df.to_csv(file_path, index=False)
-        except Exception:
-            pass
+        except Exception as e:
+            _report(f'fetch_and_cache_data: cannot write cache {file_path}', e)
 
         return final_df
 
@@ -1637,8 +1729,8 @@ class TradingDashboard:
         try:
             if hasattr(self, 'log_container') and self.log_container:
                 self.log_container.push(formatted)
-        except Exception:
-            pass
+        except Exception as e:
+            _report('log: push to log_container failed', e)
         # Also write to real stdout for terminal visibility
         try:
             if hasattr(self, 'original_stdout'):
@@ -1648,6 +1740,8 @@ class TradingDashboard:
                 sys.__stdout__.write(formatted + '\n')
                 sys.__stdout__.flush()
         except Exception:
+            # Reporter of last resort: stdout itself is gone. Reporting here
+            # would recurse into the same failure. Stay silent deliberately.
             pass
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1655,30 +1749,22 @@ class TradingDashboard:
     # ──────────────────────────────────────────────────────────────────────────
 
     def _discover_strategies(self):
-        strategies = {}
-        repo_dir = os.path.join(BASE_DIR, 'strategies', 'repository')
+        """
+        {key: json_path}, delegated to strategies.discover_strategies().
 
-        if os.path.exists(repo_dir):
-            for fpath in sorted(glob.glob(os.path.join(repo_dir, '*.json'))):
-                try:
-                    with open(fpath, 'r') as f:
-                        data = json.load(f)
-                    name = data.get(
-                        'strategy_name',
-                        os.path.basename(fpath).replace('.json', ''),
-                    )
-                    strategies[name.lower()] = fpath
-                except Exception:
-                    name = os.path.basename(fpath).replace('.json', '')
-                    strategies[name] = fpath
+        This used to key on the JSON's lowercased 'strategy_name' ("Regime Rider"
+        -> 'regime rider') while STRATEGY_MAP keyed on short identifiers, so two of
+        four shipped strategies never resolved. Discovery now lives in exactly one
+        place so the two sides cannot drift apart again (ADR-001).
+        """
+        return strategies_pkg.discover_strategies()
 
-        default_path = os.path.join(BASE_DIR, 'strategies', 'strategies.json')
-        if os.path.exists(default_path) and 'standard' not in strategies:
-            strategies['standard'] = default_path
-        if not strategies:
-            strategies['standard'] = default_path
-
-        return strategies
+    def _strategy_options(self):
+        """{key: display label} for the selector — keys stay canonical."""
+        return {
+            key: strategies_pkg.display_name(key)
+            for key in self._discover_strategies()
+        }
 
     def _get_strategy_info(self, path):
         try:
@@ -1689,7 +1775,10 @@ class TradingDashboard:
                 data.get('version', '?'),
                 data.get('comment', ''),
             )
-        except Exception:
+        except Exception as e:
+            # This is where a stray "Active: Unknown v?" in the sidebar comes
+            # from — previously with no indication of why.
+            _report(f'_get_strategy_info: cannot read {path}', e)
             return ('Unknown', '?', '')
 
     async def _apply_strategy(self):
@@ -1721,7 +1810,14 @@ class TradingDashboard:
                 self.bot.state.update_config(self.bot.state.config)
             self.log(f'Bot strategy updated to: {name}')
 
-        await self.run_backtest_simulation()
+        ran = await self.run_backtest_simulation()
+
+        if ran is False:
+            # The backtest was deferred, so chart_markers still belong to the
+            # PREVIOUS strategy. Showing their counts here labelled them as the
+            # newly selected strategy's results.
+            self.strat_stats_label.text = 'Stats: pending…'
+            return
 
         if hasattr(self, 'chart_markers') and self.chart_markers:
             # Signal markers have 'Buy'/'Sell' text; trade markers have LONG/SHORT/TP/SL etc.

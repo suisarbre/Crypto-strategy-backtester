@@ -8,7 +8,10 @@ try:
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
     from secret_keys import API_KEY, SECRET_KEY
 except ImportError:
-    print("⚠️ [WARNING] secret_keys.py not found. Using dummy keys.")
+    # Optional. The bot only calls PUBLIC CCXT endpoints (fetch_ohlcv,
+    # fetch_ticker), which require no authentication — see ADR-002; there is no
+    # order-execution code. Credentials would only be needed if a live path is
+    # built. data_loader omits them entirely when they are blank.
     API_KEY = ''
     SECRET_KEY = ''
 

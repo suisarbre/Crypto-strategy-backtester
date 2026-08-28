@@ -1,5 +1,25 @@
 # Class Diagram
 
+> ### 🛑 Superseded — use [`generated/CLASS_DIAGRAM.md`](generated/CLASS_DIAGRAM.md)
+>
+> **Audited 2026-08-26: roughly half the members below do not resolve against
+> the source.** Kept only as a record of the original design intent. Regenerate
+> the current one with `python tools/gen_docs.py`.
+>
+> Named here but **nonexistent in code**: `IStrategy` (it is `BaseStrategy`),
+> `UniversalOptimizer` (`core/optimizer.py` is plain functions),
+> `CppStrategyExtension` (it is the `cpp_engine` pybind11 module),
+> `load_configuration()`, `run_backtest_batch()`, `update_trailing_stop()`,
+> `evaluate_condition()`, `current_state`, and `PaperTrader.start()/stop()/
+> _trading_loop()/hot_swap_strategy()` — the loop actually lives on
+> `TradingDashboard`.
+>
+> **Missing entirely**: `process_tick()` (the method every tick flows through),
+> `LorentzianStrategy`, `SignalEvaluator`, and the `CsvLogger` hierarchy.
+>
+> This file is not maintained. It rotted because hand-drawn method-level UML is
+> invalidated by every refactor — which is why its replacement is generated.
+
 This document illustrates the static structure and relationships between the main classes of the **Modular Algorithmic Trading Platform**.
 
 ```mermaid

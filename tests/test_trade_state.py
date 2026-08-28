@@ -45,15 +45,36 @@ class TestTradeStateManager(unittest.TestCase):
 
     def test_process_tick_sl(self):
         # Arrange
-        self.state.config['sl_ratio'] = 0.10 # 10% SL
+        # sl_ratio must stay inside DAILY_LOSS_LIMIT (5%), otherwise the daily
+        # guard preempts the stop-loss and closes with its own reason (ADR-004).
+        self.state.config['sl_ratio'] = 0.03 # 3% SL
         self.state.open_position(1, 100.0)
-        
-        # Act: Price drops to 89 (-11%)
-        logs = self.state.process_tick(89.0)
-        
+
+        # Act: Price drops to 96 (-4%)
+        logs = self.state.process_tick(96.0)
+
         # Assert
         self.assertEqual(self.state.position, 0) # Should be closed due to SL
         self.assertIn("stop_loss", logs[0])
+        self.assertFalse(self.state.is_paused) # a normal stop does not pause the day
+
+    def test_daily_loss_preempts_a_wider_stop_loss(self):
+        """
+        If sl_ratio exceeds DAILY_LOSS_LIMIT the hard stop is unreachable — the
+        daily guard fires first, closes the position, and pauses for the day.
+        Pins the precedence so the config invariant is visible.
+        """
+        # Arrange
+        self.state.config['sl_ratio'] = 0.10 # 10% SL, wider than the 5% daily limit
+        self.state.open_position(1, 100.0)
+
+        # Act: Price drops to 89 (-11%)
+        logs = self.state.process_tick(89.0)
+
+        # Assert
+        self.assertEqual(self.state.position, 0)
+        self.assertIn("DailyLossLimit", logs[0])
+        self.assertTrue(self.state.is_paused)
 
     def test_process_tick_delegates_to_strategy(self):
         # Arrange

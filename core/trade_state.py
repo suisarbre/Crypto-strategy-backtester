@@ -22,11 +22,9 @@ class TradeStateManager:
         # self.load_params()
         
         # [NEW] Select strategy logic
-        # Use 'active_strategy' key from config if present, otherwise fall back to cfg.ACTIVE_STRATEGY
-        strategy_name = self.config.get('active_strategy', cfg.ACTIVE_STRATEGIES[0] if hasattr(cfg, 'ACTIVE_STRATEGIES') else 'standard')
-        # Fallback if AVAILABLE_STRATEGIES exists but active_strategy is missing
-        if not strategy_name: strategy_name = 'standard'
-        
+        # Use 'active_strategy' from config, else the configured default.
+        strategy_name = self.config.get('active_strategy') or getattr(cfg, 'ACTIVE_STRATEGY', 'standard')
+
         self.logic = strategies.get_strategy(strategy_name)
         
         # Account state
@@ -75,15 +73,14 @@ class TradeStateManager:
         with self.lock:
             self.config = new_config
             
-            # [NEW] Update strategy logic on config change
+            # [NEW] Update strategy logic on config change.
+            # Always rebuild: two JSON strategies share the JsonStrategyLogic class,
+            # so an isinstance check would silently keep the previous rules loaded.
+            # resolve_strategy_class raises on an unknown key rather than no-op'ing,
+            # which previously left trades running under the old strategy (ADR-001).
             new_strat_name = self.config.get('active_strategy')
             if new_strat_name:
-                # Recreate strategy instance if name changed (low cost)
-                # Compare by class type
-                target_cls = strategies.STRATEGY_MAP.get(new_strat_name)
-                if target_cls:
-                    if self.logic is None or not isinstance(self.logic, target_cls):
-                        self.logic = target_cls()
+                self.logic = strategies.get_strategy(new_strat_name, base_config=self.config)
 
     def process_tick(self, price, signal=None, current_atr=0.0, timestamp=None, **kwargs):
         """
@@ -130,7 +127,8 @@ class TradeStateManager:
             
             # [A] Daily Loss Check (Global)
             # If timestamp is provided, we are likely in backtest -> Use it for date calc
-            self._check_daily_loss(price, timestamp)
+            # Measured on equity, and force-closes before pausing (ADR-004).
+            logs.extend(self._check_daily_loss(price, timestamp))
             if self.is_paused:
                 return logs # Trading paused, skip rest
                 
@@ -185,41 +183,87 @@ class TradeStateManager:
             
         return logs
 
+    def unrealized_pnl(self, price):
+        """
+        [Risk] Leveraged PnL of the open position at `price`, as a fraction of
+        balance. Returns 0.0 when flat. Mirrors PaperTrader.monitor_position().
+        """
+        if self.position == 0 or self.avg_entry <= 0:
+            return 0.0
+
+        if self.position == 1:
+            raw_pnl = (price - self.avg_entry) / self.avg_entry
+        else:
+            raw_pnl = (self.avg_entry - price) / self.avg_entry
+
+        return raw_pnl * self.entry_leverage
+
+    def equity(self, price):
+        """[Risk] Balance plus unrealized PnL — half size after a partial exit."""
+        lev_pnl = self.unrealized_pnl(price)
+        if lev_pnl == 0.0:
+            return self.balance
+
+        size_ratio = 0.5 if self.partial_done else 1.0
+        return self.balance + (self.balance * size_ratio * lev_pnl)
+
     def _check_daily_loss(self, current_price, timestamp=None):
         """
-        [Risk] Check if daily loss limit is hit.
-        Resets daily_start_balance if day changed.
+        [Risk] Check if daily loss limit is hit, measured on mark-to-market
+        equity rather than realized balance (ADR-004).
+
+        Force-closes any open position before pausing: process_tick() returns
+        immediately once is_paused is set, so pausing without closing would
+        strand the position with every downstream guard disabled.
+
+        Resets daily_start_balance and clears the pause on day change.
         timestamp: Unix timestamp (int) or None. If None, uses system date.
+
+        Returns: list[str] of event logs (may include a forced close).
         """
         import datetime
-        
+
+        logs = []
+
         if timestamp:
             current_date = datetime.datetime.fromtimestamp(timestamp).date()
             is_backtest = True
         else:
             current_date = datetime.date.today()
             is_backtest = False
-        
-        # Day Change Reset
+
+        # Day Change Reset. Auto-resume is what makes this a *daily* limit rather
+        # than a one-shot kill switch; is_manual_stop is deliberately untouched.
         if self.last_trade_date != current_date:
             self.last_trade_date = current_date
             self.daily_start_balance = self.balance
-            # Auto-resume on new day?
-            # if self.is_paused: self.is_paused = False 
-            
-        # Calc Loss
-        if self.daily_start_balance > 0:
-            loss_pct = (self.daily_start_balance - self.balance) / self.daily_start_balance
-            limit = getattr(cfg, 'DAILY_LOSS_LIMIT', 0.05)
-            
-            if loss_pct >= limit and not self.is_paused:
-                self.is_paused = True
-                if not is_backtest:
-                    print(f"\n[RISK] [STOP] Daily Loss Limit Hit (-{loss_pct*100:.1f}%). Trading Paused.")
-                else:
-                    # In backtest, we might want to log it but not spam stderr
-                    # or just silently pause.
-                    pass
+            if self.is_paused:
+                self.is_paused = False
+                logs.append("[RISK] New trading day — daily loss pause lifted.")
+
+        if self.daily_start_balance <= 0 or self.is_paused:
+            return logs
+
+        # Mark to market: an open losing position counts toward the limit.
+        current_equity = self.equity(current_price)
+        loss_pct = (self.daily_start_balance - current_equity) / self.daily_start_balance
+        limit = getattr(cfg, 'DAILY_LOSS_LIMIT', 0.05)
+
+        if loss_pct < limit:
+            return logs
+
+        # Terminate: realize the position first, then pause.
+        if self.position != 0:
+            lev_pnl = self.unrealized_pnl(current_price)
+            logs.append(self.close_position(current_price, "DailyLossLimit", lev_pnl))
+
+        self.is_paused = True
+        msg = f"[RISK] [STOP] Daily Loss Limit Hit (-{loss_pct*100:.1f}% equity). Trading Paused."
+        logs.append(msg)
+        if not is_backtest:
+            print(f"\n{msg}")
+
+        return logs
 
     def _check_risk_management(self, price, atr):
         """

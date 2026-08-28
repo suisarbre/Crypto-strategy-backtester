@@ -7,9 +7,17 @@ import utils
 utils.apply_patches()
 
 # Exchange instance (with server-time sync to avoid -1021 timestamp errors)
+#
+# Credentials are OPTIONAL and omitted entirely when blank: this module only
+# calls public endpoints (fetch_ohlcv, fetch_ticker), which need no auth. Passing
+# empty strings makes ccxt believe it is authenticated and turns a public-endpoint
+# problem into a confusing auth error. See ADR-002 — there is no order code.
+_auth = {}
+if getattr(cfg, 'API_KEY', '') and getattr(cfg, 'SECRET_KEY', ''):
+    _auth = {'apiKey': cfg.API_KEY, 'secret': cfg.SECRET_KEY}
+
 exchange = ccxt.binanceus({
-    'apiKey': cfg.API_KEY,
-    'secret': cfg.SECRET_KEY,
+    **_auth,
     'enableRateLimit': True,
     'options': {
         'adjustForTimeDifference': True,   # auto-sync clock offset

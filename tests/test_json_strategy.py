@@ -6,7 +6,7 @@ from strategies.json_strategy import JsonStrategyLogic
 
 class TestJsonStrategyLogic(unittest.TestCase):
     def setUp(self):
-        self.logic = JsonStrategyLogic()
+        self.logic = JsonStrategyLogic({})
         self.mock_state = MagicMock()
         self.mock_state.config = {
             'use_trailing_stop': True,

@@ -461,7 +461,9 @@ class AppLayout:
             ui.label('STRATEGY').classes('section-label')
             with ui.column().classes('w-full gap-2'):
                 self.dashboard.available_strategies = self.dashboard._discover_strategies()
-                strat_options = list(self.dashboard.available_strategies.keys())
+                # {key: label} — the selector's value stays the canonical key
+                # (filename stem); the JSON's strategy_name is display only.
+                strat_options = self.dashboard._strategy_options()
 
                 self.dashboard.strategy_select = (
                     ui.select(
