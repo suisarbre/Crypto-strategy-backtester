@@ -11,6 +11,9 @@ and cannot place trades.** That's a deliberate boundary, not an omission; see
 
 ![Dashboard](docs/images/dashboard.png)
 
+<sub>A backtest of the Standard strategy over ~15k 5-minute bars, entry and exit
+markers drawn on the chart.</sub>
+
 ---
 
 ## What it does
@@ -107,6 +110,13 @@ yourself:
   proxy, with Sortino, Calmar, profit factor and alpha. A strategy that
   underperforms holding the asset is a losing strategy no matter how green the
   equity curve looks.
+
+<img src="docs/images/benchmarks.png" alt="Benchmark panel" width="420">
+
+<sub>The reference strategy failing its benchmarks: −10.01% return against a
+buy-and-hold baseline, α −16.07%, profit factor 0.50. Reporting that clearly is
+the job — the framework is built to identify losing strategies, not to flatter
+them.</sub>
 
 Leverage was deliberately removed from the search space: it inflates the
 fitness score without improving the signal, so the optimizer just turns it up.
