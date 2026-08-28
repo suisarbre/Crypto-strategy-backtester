@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import types
 import config as cfg
 from .json_strategy import JsonStrategyLogic
 from .lorentzian import LorentzianStrategy
@@ -87,7 +88,10 @@ def build_strategy_config(name, base=None):
     Also stashes the raw JSON under 'strategy_json' so JsonStrategyLogic can
     evaluate its rules without the dashboard having to inject it separately.
     """
-    config = {k: v for k, v in cfg.__dict__.items() if not k.startswith('__')}
+    # The config facade star-imports its submodules, so cfg.__dict__ also
+    # carries their imported modules (os, sys, ...) — settings only, please.
+    config = {k: v for k, v in cfg.__dict__.items()
+              if not k.startswith('__') and not isinstance(v, types.ModuleType)}
     if base:
         config.update(base)
 

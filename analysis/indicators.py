@@ -11,22 +11,43 @@ import pandas as pd
 import ta
 import config as cfg
 
+def rq_weights(lookback, relative_weight, lookback_mult=5):
+    """Rational-quadratic weights by lag: w[d] for d = 0 .. lookback*lookback_mult."""
+    lags = np.arange(int(lookback) * int(lookback_mult) + 1, dtype=np.float64)
+    return (1.0 + (lags ** 2) / (2.0 * relative_weight ** 2)) ** (-relative_weight)
+
+
 def get_rational_quadratic_kernel(src, lookback, relative_weight, lookback_mult=5):
-    y_hat = src.copy()
-    src_np = src.values
-    length = len(src)
-    calc_start = 0
-    
-    for i in range(calc_start, length):
-        current_weight = 0.0
-        cumulative_weight = 0.0
-        # Standardized lookback range
-        for j in range(max(0, i - lookback * lookback_mult), i + 1):
-            w = (1 + (np.power(i - j, 2) / (2 * np.power(relative_weight, 2)))) ** (-relative_weight)
-            current_weight += src_np[j] * w
-            cumulative_weight += w
-        if cumulative_weight != 0:
-            y_hat.iloc[i] = current_weight / cumulative_weight
+    """
+    Rational-quadratic kernel regression over `src`.
+
+    The weight depends only on the lag (i - j), so it is the same for every bar
+    — this is a causal fixed-weight filter, i.e. a convolution. It used to be a
+    nested Python loop doing ~375k iterations with per-element np.power() calls
+    and a .iloc[i] assignment per bar, which cost ~3.4s on 15k bars and held the
+    GIL the entire time. That starved the asyncio event loop badly enough for
+    NiceGUI to drop the websocket mid-load.
+
+    Output is identical to the loop; tests/test_indicators_kernel.py pins that.
+    """
+    values = np.asarray(src, dtype=np.float64)
+    n = values.size
+    if n == 0:
+        return src.copy()
+
+    w = rq_weights(lookback, relative_weight, lookback_mult)
+
+    # numerator[i] = sum_d values[i-d] * w[d], truncated at the series start
+    numerator = np.convolve(values, w)[:n]
+
+    # denominator[i] = sum of the weights actually used at bar i
+    denominator = np.cumsum(w)[np.minimum(np.arange(n), w.size - 1)]
+
+    y_hat = np.divide(numerator, denominator,
+                      out=values.copy(), where=denominator != 0)
+
+    if isinstance(src, pd.Series):
+        return pd.Series(y_hat, index=src.index, name=src.name)
     return y_hat
 
 def add_indicators(df, conf):
@@ -111,16 +132,21 @@ def add_indicators(df, conf):
     final_upper[0] = upper[0]
     final_lower[0] = lower[0]
     
+    # NOTE: index the pre-extracted numpy arrays (`upper`/`lower`), not the
+    # pandas Series. This loop used to read basic_upper[i]/basic_lower[i], which
+    # is Series.__getitem__ — ~84k calls and 0.7s per load, while the .values
+    # arrays sat unused right above. SuperTrend is genuinely recursive, so the
+    # loop itself stays.
     for i in range(1, len(df)):
         # Final Upper Band
-        if basic_upper[i] < final_upper[i-1] or close[i-1] > final_upper[i-1]:
-            final_upper[i] = basic_upper[i]
+        if upper[i] < final_upper[i-1] or close[i-1] > final_upper[i-1]:
+            final_upper[i] = upper[i]
         else:
             final_upper[i] = final_upper[i-1]
-            
+
         # Final Lower Band
-        if basic_lower[i] > final_lower[i-1] or close[i-1] < final_lower[i-1]:
-            final_lower[i] = basic_lower[i]
+        if lower[i] > final_lower[i-1] or close[i-1] < final_lower[i-1]:
+            final_lower[i] = lower[i]
         else:
              final_lower[i] = final_lower[i-1]
              

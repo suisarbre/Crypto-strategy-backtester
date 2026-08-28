@@ -9,8 +9,15 @@ import glob
 
 def run_bot(args):
     """
-    Starts the Live/Paper Trading Bot.
+    Starts the Paper Trading Bot.
     """
+    # Refuse loudly rather than silently running paper: the flag used to be
+    # parsed and discarded, which described the bot as something it is not.
+    if getattr(args, 'live', False):
+        print("Error: --live is not implemented. The bot is paper-only — there is no "
+              "order-execution code (see docs/decisions/ADR-002-live-execution.md).")
+        sys.exit(1)
+
     # Lazy imports: These modules have heavy side effects (NiceGUI binds ports,
     # dashboard.py hijacks stdout, PaperTrader connects to exchange).
     # Only load them when actually running the bot.
@@ -145,7 +152,9 @@ def main():
 
     # Command: run
     parser_run = subparsers.add_parser("run", help="Start the Trading Bot (Live/Paper)")
-    parser_run.add_argument("--live", action="store_true", help="Enable Live Trading (Real Money)")
+    parser_run.add_argument("--live", action="store_true",
+                            help="Not implemented — the bot is paper-only and has no order code "
+                                 "(see docs/decisions/ADR-002-live-execution.md)")
     
     # Command: optimize
     parser_opt = subparsers.add_parser("optimize", help="Run Strategy Optimization")

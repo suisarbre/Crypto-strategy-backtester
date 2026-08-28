@@ -496,10 +496,10 @@ class AppLayout:
             # ── Chart Tools ──
             ui.label('CHART').classes('section-label')
             with ui.column().classes('w-full gap-2'):
-                ui.button('Load Data & Strategy', on_click=self.dashboard.run_backtest_simulation) \
+                ui.button('Load Data & Strategy', on_click=self.dashboard.chart_panel.run_backtest_simulation) \
                     .props('unelevated icon=insights') \
                     .classes('w-full btn-modern btn-purple text-white')
-                ui.button('Reload Chart', on_click=self.dashboard.init_chart) \
+                ui.button('Reload Chart', on_click=self.dashboard.chart_panel.init_chart) \
                     .props('unelevated icon=refresh') \
                     .classes('w-full btn-modern btn-ghost')
 
@@ -508,7 +508,7 @@ class AppLayout:
             # ── Optimization ──
             ui.label('OPTIMIZATION').classes('section-label')
             with ui.column().classes('w-full gap-2'):
-                ui.button('Optimize Strategy', on_click=self.dashboard.open_optimization_dialog) \
+                ui.button('Optimize Strategy', on_click=self.dashboard.optimization.open_optimization_dialog) \
                     .props('unelevated icon=tune') \
                     .classes('w-full btn-modern btn-primary text-white')
 

@@ -36,7 +36,22 @@ py::array_t<int> FastKNN::predict(py::array_t<double> X) {
     size_t n_features = buf_X.shape[1];
 
     std::vector<int> predictions(n_samples);
-    std::vector<std::pair<double, int>> neighbors; 
+
+    // Release the GIL around the compute. This is O(n_test * n_train * features)
+    // -- ~900M distance terms on a 15k-bar load, about 4 seconds -- and pybind11
+    // holds the GIL by default, so it blocked the asyncio event loop for the
+    // entire call and NiceGUI dropped the websocket mid-load. Wrapping the
+    // Python side in async/to_thread cannot help with that; only releasing the
+    // GIL can.
+    //
+    // Safe: the block below touches only raw buffer pointers and std::
+    // containers, never a Python object. `X` keeps the buffer alive for the
+    // duration of the call, and the GIL is reacquired before the return array
+    // is built.
+    {
+        py::gil_scoped_release release;
+
+    std::vector<std::pair<double, int>> neighbors;
     neighbors.reserve(train_data.size());
 
     for (size_t i = 0; i < n_samples; ++i) {
@@ -70,6 +85,8 @@ py::array_t<int> FastKNN::predict(py::array_t<double> X) {
         else if (vote_minus_1 > vote_1) predictions[i] = -1;
         else predictions[i] = -1; // Tie-break: prefer -1
     }
+
+    }  // GIL reacquired here — the return array needs it
 
     return py::array_t<int>({static_cast<long>(n_samples)}, {sizeof(int)}, predictions.data());
 }

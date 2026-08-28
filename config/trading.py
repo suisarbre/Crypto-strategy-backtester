@@ -56,6 +56,10 @@ BE_OFFSET = 0.002             # BE + 0.2% (to cover fees)
 
 # [Current Config] (Runtime State)
 CURRENT_CONFIG = {
+    # TradeStateManager reads this from its config dict, not from the module —
+    # without this key the ATR-based stop-loss silently never activates in
+    # live/paper trading while the C++ backtester still applies sl_multiplier.
+    'USE_ATR_SL': USE_ATR_SL,
     'max_bars_back': 10000,
     'neighbors': 8,      
     'rsi_length': 14,      
