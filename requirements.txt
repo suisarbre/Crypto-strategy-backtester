@@ -1,0 +1,12 @@
+# Runtime
+ccxt              # exchange data (public endpoints only — no API key needed)
+nicegui           # web dashboard
+pandas
+numpy
+ta                # technical indicators
+scikit-learn      # KNN fallback when the C++ engine isn't built
+schedule          # periodic re-optimization
+
+# Optional — only needed to build the native engine (see README)
+pybind11
+setuptools
