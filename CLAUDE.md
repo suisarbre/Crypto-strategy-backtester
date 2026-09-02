@@ -102,7 +102,9 @@ Never hand-edit anything in `docs/generated/`.
 
 ## Environment
 
-- Python 3.10+ (tested 3.12/3.13), Windows + MSVC 2022 for the C++ build.
+- Python 3.10+ (tested 3.12/3.13). C++ build: MSVC 2022 on Windows, clang/gcc
+  on Linux (clang needs `libomp-dev`; `CPP_ENGINE_NO_OPENMP=1` builds without
+  OpenMP). CI (`.github/workflows/ci.yml`) builds and tests both.
 - `python setup.py build_ext --inplace` produces `cpp_engine.*.pyd`. Without it,
   4 test modules fail to import and the code falls back to Python/sklearn paths.
 - `secret_keys.py` holds `API_KEY` / `SECRET_KEY`. Gitignored — never commit it.

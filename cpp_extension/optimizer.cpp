@@ -9,7 +9,11 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#ifdef _OPENMP
 #include <omp.h>
+#else
+static inline int omp_get_thread_num() { return 0; }
+#endif
 
 // Helper to extract vector from python list safely
 std::vector<double> get_range_from_list(py::list l) {
