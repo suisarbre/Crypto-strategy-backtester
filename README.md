@@ -1,5 +1,7 @@
 # Crypto Strategy Backtester
 
+[![CI](https://github.com/suisarbre/Crypto-strategy-backtester/actions/workflows/ci.yml/badge.svg)](https://github.com/suisarbre/Crypto-strategy-backtester/actions/workflows/ci.yml)
+
 A backtesting and parameter-optimization framework for crypto trading
 strategies, with a native C++ engine and a real-time web dashboard. Strategies
 are defined as JSON rule sets rather than code, so new ones can be added,
@@ -141,11 +143,16 @@ python main.py optimize --timeframe 15m
 ### Optional: build the native engine
 
 Roughly an order of magnitude faster, and required for the risk-adjusted
-metrics (Sortino, Calmar, profit factor). Needs MSVC 2022 on Windows.
+metrics (Sortino, Calmar, profit factor). Needs MSVC 2022 on Windows, or
+clang/gcc on Linux (clang additionally needs the LLVM OpenMP runtime,
+`apt install libomp-dev`).
 
 ```bash
 python setup.py build_ext --inplace
 ```
+
+On toolchains without OpenMP (e.g. Apple clang), set `CPP_ENGINE_NO_OPENMP=1`
+to build a single-threaded engine.
 
 ### Tests
 
